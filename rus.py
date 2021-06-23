@@ -3,12 +3,6 @@ import math
 import quimb.tensor as qtn
 import cotengra as ctg
 
-iY = np.zeros((2,)*2)
-iY[0,1] = 1.0
-iY[1,0] = -1.0
-ZERO = np.zeros(2)
-ZERO[0] = 1.0
-
 def _Ry(x): # exp(-i*x*Y)
     U = np.eye(2)*math.cos(x)
     U -= iY*math.sin(x)
@@ -31,32 +25,69 @@ def _C2(op): # c1c1,c2c2,io
     U[1,1,0,0,...] = np.eye(2)
     U[1,1,1,1,...] = op.copy()
     return U 
+iY = np.array([[0.0,1.0],[-1.0,0.0]])
+NOT = np.array([[0.0,1.0],[1.0,0.0]]) 
+ZERO = np.array([1.0,0.0])
+H = np.array([[1.0,1.0],[1.0,-1.0]])/math.sqrt(2)
+CNOT = _C1(NOT)
+GHZ_inv = np.einsum('ijkl,jm->imkl',CNOT,H) # i1o1,i2o2
+
 def _gb(R,C=None,contr_ancilla=True):
     # Rx,io: rotation on aux
     # C: controled op, default = -iY
     C = _C1(-iY) if C is None else C
     n = len(R.shape)-2
-#    tmp = np.einsum('...ij,i->...j',R,ZERO)
     state_inds = ['{},'.format(i+1) for i in range(n)]
     ls = []
-    inds = tuple(state_inds+['j'])
-    ls.append(qtn.Tensor(data=tmp,inds=inds,tags='R'))
-    inds = tuple(state_inds+['k'])
-    ls.append(qtn.Tensor(data=tmp,inds=inds,tags='R'))
-    inds = ('j','k','i','o')
+    inds = tuple(state_inds+['ai','ci'])
+    ls.append(qtn.Tensor(data=R,inds=inds,tags='R'))
+    inds = tuple(state_inds+['ao','co'])
+    ls.append(qtn.Tensor(data=R,inds=inds,tags='R'))
+    inds = 'ci','co','i','o'
     ls.append(qtn.Tensor(data=C,inds=inds,tags='C'))
+    if contr_ancilla:
+        ls.append(qtn.Tensor(data=ZERO,inds=('ai',),tags='ZERO'))
+        ls.append(qtn.Tensor(data=ZERO,inds=('ao',),tags='ZERO'))
+        output_inds = state_inds+['i','o']
+    else: 
+        output_inds = state_inds+['ai','ao','i','o']
     TN = qtn.TensorNetwork(ls)
 #    optimize = ctg.HyperOptimizer(max_repeats=64,parallel='ray',reconf_opts={})
     optimize='auto'
-    output_inds = state_inds+['i','o']
     out = TN.contract(optimize=optimize,output_inds=output_inds)
     return out.data
-def _par(R,w,C=None):
+def _par(R,w,C=None,contr_ancilla=True):
+    C = _C2(-iY) if C is None else C
+    n = len(R.shape)-2
+    state_inds = ['{},'.format(i+1) for i in range(n)]
+    ls = []
+    inds = tuple(state_inds+['a1i','c1i'])
+    ls.append(qtn.Tensor(data=R,inds=inds,tags='R'))
+    inds = 'a2i','c2i'
+    ls.append(qtn.Tensor(data=_Ry(w),inds=inds,tags='Rw'))
+    inds = 'c1i','c1o','c2i','c2o','i','o'
+    ls.append(qtn.Tensor(data=C,inds=inds,tags='C'))
+    inds = 'c1o','a1o','c2o','a2o'
+    ls.append(qtn.Tensor(data=GHZ_inv,inds=inds,tags='GHZ_inv'))
+    if contr_ancilla: 
+        ls.append(qtn.Tensor(data=ZERO,inds=('a1i',),tags=ZERO))
+        ls.append(qtn.Tensor(data=ZERO,inds=('a1o',),tags=ZERO))
+        ls.append(qtn.Tensor(data=ZERO,inds=('a2i',),tags=ZERO))
+        ls.append(qtn.Tensor(data=ZERO,inds=('a2o',),tags=ZERO))
+        output_inds = state_inds+['i','o']
+    else: 
+        output_inds = state_inds+['a1i','a1o','a2i','a2o','i','o']
+    TN = qtn.TensorNetwork(ls)
+#    optimize = ctg.HyperOptimizer(max_repeats=64,parallel='ray',reconf_opts={})
+    optimize='auto'
+    out = TN.contract(optimize=optimize,output_inds=output_inds)
+    return out.data
+def _par_(R,w,C=None):
     C = _C2(-iY) if C is None else C
     n = len(R.shape)-2
     aux1 = np.einsum('...ij,i->...j',R,ZERO)
     aux2 = np.einsum('ij,i->j',_Ry(w),ZERO)
-    out = np.einsum('klmnio,ln->kmio',C,np.eye(2))
+    out = np.einsum('klmnio,ln->kmio',C,np.eye(2)/math.sqrt(2))
     out = np.einsum('kmio,m->kio',out,aux2)
     out = np.einsum('kio,...k->...io',out,aux1)
     return out
@@ -91,3 +122,4 @@ def _add_hidden(R1,R2):
     output_inds = state_inds+['i','o']
     out = TN.contract(optimize=optimize,output_inds=output_inds)
     return out.data
+
