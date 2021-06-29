@@ -2,6 +2,7 @@ import numpy as np
 import math
 import rus, oaa
 ZERO = np.array([1.0,0.0])
+ONE = np.array([0.0,1.0])
 xs = [np.random.rand() for i in range(2)]
 w = np.random.rand()
 def _num_oaa(L,xs,gamma=0.5):
@@ -77,13 +78,15 @@ if test == 'L':
         amp1 = _num_oaa(L,amps)
         print(amp1)
         angles = oaa._angles(L)
-        GA = oaa._normalize1(R,angles)
-        GA = np.einsum('...ijkl,i,j->...kl',GA,ZERO,ZERO)
+        GA2 = oaa._normalize1(R,angles)
+        GA = np.einsum('...ijkl,i,j->...kl',GA2,ZERO,ZERO)
+        GA_ = np.einsum('...ijkl,i,j->...kl',GA2,ONE,ZERO)
         for i in range(len(xs)):
             tan = GA[i,1,0]/GA[i,0,0]
             err_angle += abs(math.atan(tan.real)-math.atan(U[i,1,0]/U[i,0,0]))
             err_angle += abs(tan.imag)
             print('normsq', np.linalg.norm(GA[i,:,0])**2)
+            print('normsq1: ', np.linalg.norm(GA_[i,:,0])**2)
             amp2 = np.divide(GA[i,...],normed[i])
             err_amp += np.linalg.norm(amp1[i]*np.ones((2,)*2)-amp2)
     print('angle err', err_angle)
