@@ -1,35 +1,31 @@
 import numpy as np
 import math, statistics
 import gb
-d = 10
-epsilon = 0.01
-L = 10 
-thresh = 1e-12
 
-ZERO = np.array([1,0],dtype=complex)
-X = np.array([[0,1],[1,0]],dtype=complex)
-CiX = np.zeros((2,)*3,dtype=complex)
-CiX[0,...] = np.eye(2,dtype=complex)
-CiX[1,...] = 1j*X
-angles = gb._angles(L)
-
-#print('########### check decomp ##############')
-#x = [np.random.rand() for i in range(d)]
-#R = gb._Rs(x,thresh)
-#R_ = np.einsum('xa,aij->xij',R[0],R[1])
-#err = 0.0
-#for i in range(d):
-#    R = R_[i,...]
-#    tan = 1j*R[1,0]/R[0,0]
-#    angle = math.atan(tan.real)
-#    err += abs(x[i]-angle)
-#    U = gb._R(angle)
-#    tmp = np.divide(R,U).flatten()
-#    err += abs(1.0-tmp[0])
-#    err += statistics.pstdev(list(tmp.real))
-#    err += statistics.pstdev(list(tmp.imag))
-#print(err)
-#exit()
+#ZERO = np.array([1,0],dtype=complex)
+#X = np.array([[0,1],[1,0]],dtype=complex)
+#CiX = np.zeros((2,)*3,dtype=complex)
+#CiX[0,...] = np.eye(2,dtype=complex)
+#CiX[1,...] = 1j*X
+print('########### check decomp ##############')
+x = [np.random.rand() for i in range(d)]
+R = gb._Rs(x,thresh)
+R_ = np.einsum('xa,aij->xij',R[0],R[1])
+err = 0.0
+for i in range(d):
+    i1 = np.zeros(d,dtype=complex)
+    i1[i] = 0
+    R = R_[i,...]
+    tan = 1j*R[1,0]/R[0,0]
+    angle = math.atan(tan.real)
+    err += abs(x[i]-angle)
+    U = gb._R(angle)
+    tmp = np.divide(R,U).flatten()
+    err += abs(1.0-tmp[0])
+    err += statistics.pstdev(list(tmp.real))
+    err += statistics.pstdev(list(tmp.imag))
+print(err)
+exit()
 #print('########### check addition ##############')
 #x1 = [np.random.rand()*epsilon for i in range(d)]
 #x2 = [np.random.rand()*epsilon for i in range(d)]
