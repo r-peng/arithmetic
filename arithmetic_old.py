@@ -32,7 +32,7 @@ def _swap2(i,tn,thresh=1e-12,bdim=20):
         return tn[:i]+[u,vh]
     else:
         return tn[:i]+[u,vh]+tn[i+2:]
-def _swapk(k,tn,thresh=1e-12,bdim=20,max_iter=50):
+def _swapk(k,tn,thresh=1e-12,bdim=20):
     # move the first k variables to the last
     out = tn.copy()
     l = len(tn)-k
@@ -44,7 +44,6 @@ def _swapk(k,tn,thresh=1e-12,bdim=20,max_iter=50):
         for i in range(l):
             for j in range(len(tn)-1,0,-1):
                 out = _swap2(j-1,out,thresh,bdim)
-    out = _iterate(out,thresh,bdim,max_iter)
     return out
 def _reverse(tn):
     return [tn[len(tn)-1-i].transpose(2,1,0) for i in range(len(tn))]
@@ -104,26 +103,81 @@ def _iterate(tn,thresh=1e-12,bdim=20,max_iter=50):
             break 
         old = new.copy()
     return old
-def _multiply0(tn,a,thresh=1e-12,bdim=20,max_iter=50):
-    a = a**(1.0/len(tn))
-    out = [x*a for x in tn]
+def _cf(tn,thresh=1e-12,bdim=20):
+    # control on x0
+    cf1 = []
+    for i in range(len(tn)):
+        a,x,b = tn[i].shape
+        cx = np.zeros((a,x,2,b))
+        cx[:,:,1,:] = tn[i].copy()
+        for j in range(cx.shape[1]):
+            cx[0,j,0,0] = 1
+        cf1.append(cx)
+    assert len(cf1)==len(tn)
+    cf2 = []
+    u = cf1[-1].copy()
+    for i in range(len(cf1)-2,-1,-1):
+        A = np.einsum('axcb,bycd->axcyd',cf1[i],u)
+        u,s,vh = _svd(A,3,thresh,bdim)
+        s = np.sqrt(s)
+        u = np.einsum('...a,a->...a',u,s)
+        vh = np.einsum('a...,a->a...',vh,s)
+        cf2.insert(0,vh)
+    cf2.insert(0,u)
+    assert len(cf2)==len(tn)
+    return cf2
+def _compose0(tn,a,op,thresh=1e-12,bdim=20,max_iter=50):
+    if op=='+':
+        f = _cf(tn,thresh,bdim)
+        x = f[0][:,:,1,:]+f[0][:,:,0,:]*a
+        out = [x]+f[1:]
+    elif op=='*':
+        a = a**(1.0/len(tn))
+        out = [x*a for x in tn]
+    else:
+        print('Not implemented!')
     out = _iterate(out,thresh,bdim,max_iter)
     return out
-def _multiply1(tn1,tn2,thresh=1e-12,bdim=20,max_iter=50):
+def _compose1(tn1,tn2,op,thresh=1e-12,bdim=20,max_iter=50):
     # tn1: x1...xk
     # tn2: y1...yl
     # return x1...xk,y1...yl
-    out = tn1 + tn2
+    f = _reverse(tn1)
+    if op=='+':
+        f = _cf(f,thresh,bdim)
+        g = _cf(tn2,thresh,bdim)
+        A  = np.einsum('xb,ye->bxye',f[0][0,:,0,:],g[0][0,:,1,:])
+        A += np.einsum('xb,ye->bxye',f[0][0,:,1,:],g[0][0,:,0,:])
+    elif op=='*':
+        g = tn2.copy()
+        A = np.einsum('xb,ye->bxye',f[0][0,:,:],g[0][0,:,:])
+    else: 
+        print('Not implemented!')
+    u,s,vh = _svd(A,2,thresh,bdim)
+    s = np.sqrt(s)
+    u = np.einsum('...a,a->...a',u,s)
+    vh = np.einsum('a...,a->a...',vh,s)
+    out = _reverse(f[1:])+[u,vh]+g[1:]
+    assert len(out)==len(f)+len(g)
     out = _iterate(out,thresh,bdim,max_iter)
     return out
-def _multiply2(tn1,tn2,k,thresh=1e-12,bdim=20,max_iter=50):
+def _compose2(tn1,tn2,k,op,thresh=1e-12,bdim=20,max_iter=50):
     # tn1: x1...xk,y1...yl
     # tn2: x1...xk,z1...zm
     # return y1...yl,x1...xk,z1...zm
-    f = tn1.copy()
-    g = tn2.copy()
-    f = _swapk(k,f,thresh,bdim)
-    vh  = np.einsum('axb,xe->axbe',f[-k],g[0][0,:,:])
+    if op=='+':
+        f = _cf(tn1,thresh,bdim)
+        g = _cf(tn2,thresh,bdim)
+        f = _swapk(k,f,thresh,bdim)
+        vh  = np.einsum('axb,xe->axbe',f[-k][:,:,0,:],g[0][0,:,1,:])
+        vh += np.einsum('axb,xe->axbe',f[-k][:,:,1,:],g[0][0,:,0,:])
+    elif op=='*': 
+        f = tn1.copy()
+        g = tn2.copy()
+        f = _swapk(k,f,thresh,bdim)
+        vh  = np.einsum('axb,xe->axbe',f[-k],g[0][0,:,:])
+    else:
+        print('Not implemented!')
     xs = []
     for i in range(1,k):
         A = np.einsum('axbd,bye,dyh->axyeh',vh,f[-k+i],g[i])
@@ -140,137 +194,28 @@ def _multiply2(tn1,tn2,k,thresh=1e-12,bdim=20,max_iter=50):
     assert len(out)==len(f)-k+len(g)
     out = _iterate(out,thresh,bdim,max_iter)
     return out
-def _const(d,b,thresh=1e-12,bdim=20,max_iter=50):
-    b = b**(1.0/len(d))
-    x = np.ones((1,d[0],1))*b
-    out = [x]
-    for i in range(1,len(d)):
-        out = _multiply1(out,[x],thresh,bdim,max_iter)
-    return out
-def _add0(tn,b,thresh=1e-12,bdim=20,max_iter=50):
-    d = [tn[i].shape[1] for i in range(len(tn))]
-    b = _const(d,b,thresh,bdim,max_iter)
-    return _add2(tn,b,len(tn),thresh,bdim,max_iter)
-def _add1(tn1,tn2,thresh=1e-12,bdim=20,max_iter=50):
-    # tn1: x1...xk
-    # tn2: y1...yl
-    # return x1...xk,y1...yl
-    a1,x,b1 = tn1[-1].shape
-    a2,y,b2 = tn2[0].shape
-    assert b1==1
-    assert a2==1
-    tmp1 = np.zeros((a1,x,b1+a2))
-    tmp1[:,:,0] = tn1[-1][:,:,0]
-#    tmp1[:,:,1] = np.ones((a1,x)) 
-    tmp1[:,:,1] = np.ones((a1,x)) 
-    tmp2 = np.zeros((b1+a2,y,b2))
-    tmp2[1,:,:] = tn2[0][0,:,:]
-    tmp2[0,:,:] = np.ones((y,b2))
-    A = np.einsum('axi,iyb->axyb',tmp1,tmp2)
-    u,s,vh = _svd(A,2,thresh,bdim)
-    s = np.sqrt(s)
-    u = np.einsum('...a,a->...a',u,s)
-    vh = np.einsum('a...,a->a...',vh,s)
-    out = tn1[:-1]+[u,vh]+tn2[1:]
-    assert len(out)==len(tn1)+len(tn2)
-    out = _iterate(out,thresh,bdim,max_iter)
-    return out
-def _add2(tn1,tn2,k,thresh=1e-12,bdim=20,max_iter=50):
-    # tn1: x1...xk,y1...yl
-    # tn2: x1...xk,z1...zm
-    # return y1...yl,x1...xk,z1...zm
-    f = tn1.copy()
-    g = tn2.copy()
-    n1 = len(tn1)
-    n2 = len(tn2)
-
-    f = _swapk(k,f,thresh,bdim,max_iter)
-    xs = []
-    
-    af,x,bf = f[-k].shape
-    ag,x,bg = g[0].shape
-    assert ag==1
-    if n1==k:
-        assert af==1
-        vh = np.ones((1,1,af+ag))
-    else: 
-        b,y,_ = f[-k-1].shape
-        vh = np.zeros((b,y,af+ag))
-        vh[:,:,:af] = f[-k-1].copy()
-        vh[:,:,-1] = np.ones((b,y))
-    for i in range(k):
-        fi = f[n1-k+i]
-        gi = g[i]
-        af,x,bf = fi.shape
-        ag,x,bg = gi.shape
-        tmp = np.zeros((af+ag,x,bf+bg))
-        tmp[:af,:,:bf] = fi
-        tmp[af:,:,bf:] = gi
-        A = np.einsum('axb,byc->axyc',vh,tmp)
-        u,s,vh = _svd(A,2,thresh,bdim) 
-        s = np.sqrt(s)
-        u = np.einsum('...a,a->...a',u,s)
-        vh = np.einsum('a...,a->a...',vh,s)
-        xs.append(u)
-    af,x,bf = f[-1].shape
-    ag,x,bg = g[k-1].shape
-    assert bf==1
-    if n2==k:
-        assert bg==1
-        tmp = np.ones((bf+bg,1,1))
-    else:
-        _,y,c = g[k].shape
-        tmp = np.zeros((bf+bg,y,c))
-        tmp[0,:,:] = np.ones((y,c))
-        tmp[1:,:,:] = g[k].copy()
-    A = np.einsum('axb,byc->axyc',vh,tmp)
-    u,s,vh = _svd(A,2,thresh,bdim) 
-    s = np.sqrt(s)
-    u = np.einsum('...a,a->...a',u,s)
-    vh = np.einsum('a...,a->a...',vh,s)
-    xs.append(u)
-    yl = xs.pop(0)
-    z1 = vh.copy()
-    if n1==k:
-        assert yl.shape[0]==1
-        assert yl.shape[1]==1
-        yl = yl.reshape((1,yl.shape[2]))
-        xs[0] = np.einsum('ab,bxc->axc',yl,xs[0])
-    else:
-        f[-k-1] = yl
-    if n2==k: 
-        assert z1.shape[1]==1
-        assert z1.shape[2]==1
-        z1 = z1.reshape((z1.shape[2],1))
-        xs[-1] = np.einsum('axb,bc->axc',xs[-1],z1)
-    else:
-        g[k] = z1
-    out = f[:-k]+xs+g[k:]
-    assert len(out)==len(f)-k+len(g)
-    out = _iterate(out,thresh,bdim,max_iter)
-    return out
 def _poly1(tn,a,thresh=1e-12,bdim=20,max_iter=50):
     # a = [a0,...,ap]
     powers = [None,tn.copy()]
     for i in range(2,len(a)):
-        powers.append(_multiply2(tn,powers[-1],len(tn),thresh,bdim,max_iter))
+        powers.append(_compose2(tn,powers[-1],len(tn),'*',thresh,bdim,max_iter))
         print('power={},bdim={}'.format(i,_get_bdim(powers[-1])))
     assert len(powers)==len(a)
-    term = _multiply0(powers[1],a[1],thresh,bdim,max_iter)
-    f = _add0(term,a[0],thresh,bdim,max_iter)
+    term = _compose0(powers[1],a[1],'*',thresh,bdim,max_iter)
+    f = _compose0(term,a[0],'+',thresh,bdim,max_iter)
     for i in range(2,len(a)):
-        term = _multiply0(powers[i],a[i],thresh,bdim,max_iter)
-        f = _add2(f,term,len(term),thresh,bdim,max_iter)
+        term = _compose0(powers[i],a[i],'*',thresh,bdim,max_iter)
+        f = _compose2(f,term,len(term),'+',thresh,bdim,max_iter)
         print('order={},bdim={}'.format(i,_get_bdim(f)))
     return f
 def _poly2(tn,coeff,thresh=1e-12,bdim=20,max_iter=50):
     # Horner's method
     a = coeff.copy()
     a.reverse()
-    f = _multily0(tn,a[0],thresh,bdim,max_iter)
-    f = _add0(f,a[1],thresh,bdim,max_iter)
+    f = _compose0(tn,a[0],'*',thresh,bdim,max_iter)
+    f = _compose0(f,a[1],'+',thresh,bdim,max_iter)
     for i in range(2,len(a)):
-        f = _multiply2(f,tn,len(tn),thresh,bdim,max_iter)
-        f = _add0(f,a[i],thresh,bdim,max_iter)
+        f = _compose2(f,tn,len(tn),'*',thresh,bdim,max_iter)
+        f = _compose0(f,a[i],'+',thresh,bdim,max_iter)
         print('power={},bdim={}'.format(i,_get_bdim(f)))
     return f
