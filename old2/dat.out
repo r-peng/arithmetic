@@ -1,0 +1,30 @@
+################### n=3,ngrid=10 #############
+single point err=[[0.]],bdim=[9, 9, 1]
+integration by contraction
+integration in scipy
+integration err=[[0.000024]]
+################### n=3,ngrid=20 #############
+single point err=[[0.]],bdim=[7, 6, 1]
+integration by contraction
+integration in scipy
+integration err=[[0.000025]]
+################### n=3,ngrid=50 #############
+single point err=[[0.]],bdim=[9, 8, 1]
+integration by contraction
+integration in scipy
+integration err=[[0.000004]]
+################### n=3,ngrid=100 #############
+single point err=[[0.]],bdim=[10, 9, 1]
+integration by contraction
+integration in scipy
+integration err=[[0.000001]]
+################### n=3,ngrid=500 #############
+single point err=[[0.]],bdim=[10, 20, 1]
+integration by contraction
+integration in scipy
+integration err=[[0.]]
+################### n=3,ngrid=1000 #############
+single point err=[[0.]],bdim=[20, 20, 1]
+integration by contraction
+integration in scipy
+integration err=[[0.]]
