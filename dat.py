@@ -3,9 +3,7 @@ import quimb.tensor as qtn
 import quimb.tensor.tensor_core as qtc
 import hyper as hp
 import cotengra as ctg
-#print(ctg.hyper.list_hyper_functions())
-#exit()
-def _chebyshev(x,typ,p):
+def chebyshev(x,typ,p):
     p0 = 1.0
     p1 = x
     if typ=='u' or 'U':
@@ -17,15 +15,16 @@ def _chebyshev(x,typ,p):
 
 d = 3
 n = 3
-p = 10
+p = 3 
 ins = [np.random.randint(0,d) for i in range(n)]
 
 layout='ring'
 
 xs = [np.random.rand(d) for i in range(n)]
-tn = hp._train(xs,'+')
-ts = hp._chebyshev(tn,'t',p)
-
+f = hp.train(xs)
+ft = hp.chebyshev(f,'t',p)
+#exit()
+fu = hp.chebyshev(f,'u',p)
 
 #for j in range(len(ts)):
 #    print('######################### order={} ##########################'.format(j))
@@ -53,45 +52,14 @@ ts = hp._chebyshev(tn,'t',p)
 #                        plot_leaf_labels=True)
 #    fig.savefig(layout+'{}.pdf'.format(j))
 #exit()
-us = hp._chebyshev(tn,'u',p)
 
-tn_ = tn.copy()
-for i in range(n):
-    data = np.zeros(d)
-    data[ins[i]] = 1.0
-    tn_.add_tensor(qtn.Tensor(data=data,inds=['x{},'.format(i)],tags='i'))
-tn_ = tn_.full_simplify(seq='ADCRS',output_inds=tn_._outer_inds)
-opt = ctg.HyperOptimizer()
-out = tn_.contract(output_inds=tn_._outer_inds,optimize=opt)
+out = hp.contract(f,ins) 
 true = sum([xs[i][ins[i]] for i in range(n)])
-print('sum err', true-out.data[1])
+print('sum err', true-out[1])
 
-true_ts = _chebyshev(true,'t',p)
-for j in range(2,len(ts)):
-    tn_ = ts[j].copy()
-    for i in range(n):
-        data = np.zeros(d)
-        data[ins[i]] = 1.0
-        tn_.add_tensor(qtn.Tensor(data=data,inds=['x{},'.format(i)],tags='i'))
-    tn_ = tn_.full_simplify(seq='ADCRS',
-                            output_inds=tn_._outer_inds,
-                            atol=1e-15,
-                            equalize_norms=False)
-    opt = ctg.HyperOptimizer()
-    out = tn_.contract(output_inds=tn_._outer_inds,optimize=opt)
-    print('order={}, err={}'.format(j,true_ts[j]-out.data[1]))
-true_us = _chebyshev(true,'u',p)
-for j in range(2,len(ts)):
-    tn_ = us[j].copy()
-    for i in range(n):
-        data = np.zeros(d)
-        data[ins[i]] = 1.0
-        tn_.add_tensor(qtn.Tensor(data=data,inds=['x{},'.format(i)],tags='i'))
-    tn_ = tn_.full_simplify(seq='ADCRS',output_inds=tn_._outer_inds)
-#    for i in range(n):
-#        tn_._outer_inds.add('x{},'.format(i))
-#        tn_._inner_inds.discard('x{},'.format(i))
-    opt = ctg.HyperOptimizer()
-    out = tn_.contract(output_inds=tn_._outer_inds,optimize=opt)
-    print('order={}, err={}'.format(j,true_us[j]-out.data[1]))
-exit()
+true_ts = chebyshev(true,'t',p)
+true_us = chebyshev(true,'u',p)
+for j in range(2,p+1):
+    out_t = hp.contract(ft[j],ins) 
+    out_u = hp.contract(fu[j],ins) 
+    print('order={}, err={},{}'.format(j,true_ts[j]-out_t[1],true_us[j]-out_u[1]))
