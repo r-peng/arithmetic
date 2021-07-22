@@ -13,53 +13,67 @@ def chebyshev(x,typ,p):
         ls.append(2.0*x*ls[-1]-ls[-2])
     return ls
 
-d = 3
-n = 3
-p = 3 
-ins = [np.random.randint(0,d) for i in range(n)]
+dt = 0.1
+n = 5
+p = 4
+xs = [np.arange(-1.0,1.0,dt) for i in range(n)]
+tn = hp.train(xs)
+ts = hp.chebyshev(tn,'t',p)
+tn = ts[-1].copy()
+print('before simplify',tn.num_tensors)
+tn = hp.simplify(tn)
+print('after simplify',tn.num_tensors)
+ins = [np.random.randint(0,len(xs[i])) for i in range(n)]
+out = hp.contract(tn.copy(),ins)
+true = sum([xs[i][ins[i]] for i in range(n)])
+true_ts = chebyshev(true,'t',p)
+print('check output', true_ts[-1]-out)
 
+output_inds = ['x{},'.format(i) for i in range(n)]
+initial_layout = 'spectral'
+initial_layout = 'kamada_kawai' 
+iterations = 0
+fig = tn.draw(output_inds=output_inds,initial_layout=initial_layout,
+              iterations=iterations,
+              show_inds=True,show_tags=False,return_fig=True)
+fig.savefig(initial_layout+'p{},n{}.pdf'.format(p,n))
+exit()
 layout='ring'
 
-xs = [np.random.rand(d) for i in range(n)]
-f = hp.train(xs)
-ft = hp.chebyshev(f,'t',p)
-#exit()
-fu = hp.chebyshev(f,'u',p)
+methods = ['greedy','kahypar']
+#methods = ['kahypar-tmp']
+reconf_opts = {'inplace':True}
 
-#for j in range(len(ts)):
-#    print('######################### order={} ##########################'.format(j))
-#    tn_ = ts[j].copy()
-##    print(tn_.outer_inds())
-#    tn_ = tn_.full_simplify(seq='ADCRS',output_inds=tn_._outer_inds)
-##    print(tn_)
-#    for i in range(n):
-#        tn_._outer_inds.add('x{},'.format(i))
-#        tn_._inner_inds.discard('x{},'.format(i))
-#    print(tn_)
-#    print(tn_.outer_inds())
-#    opt = ctg.HyperOptimizer()
-#    info = tn_.contract(output_inds=tn_._outer_inds,get='path-info')
-#    print(info)
-#    tree = ctg.ContractionTree.from_info(info)
-#
-#    output = info.output_subscript
-#    output = output[:-1] if j<2 else output[1:]
-#    colors = [np.random.rand(3) for i in range(n)]
-#    highlight = dict(zip(output,colors)) 
-#    fig = ctg.plot_tree(tree,return_fig=True,
-#                        layout=layout,
-#                        highlight=highlight,
-#                        plot_leaf_labels=True)
-#    fig.savefig(layout+'{}.pdf'.format(j))
-#exit()
 
-out = hp.contract(f,ins) 
-true = sum([xs[i][ins[i]] for i in range(n)])
-print('sum err', true-out[1])
 
-true_ts = chebyshev(true,'t',p)
+
+print(tn.outer_inds())
+#for key in tn.tensor_map.keys():
+#    print(key,tn.tensor_map[key])
+opt = ctg.HyperOptimizer(methods=methods,reconf_opts=reconf_opts)
+info = tn.contract(output_inds=tn._outer_inds,optimize=opt,get='path-info')
+labels = info.input_subscripts.split(',') 
+tree = ctg.ContractionTree.from_info(info)
+print(info)
+#for key in tree.children.keys():
+#    print(key,tree.children[key])
+#    hp.contract_from_tree(tn,tree)
+#    tree2 = tree.subtree_reconfigure_forest()
+#    print(tree2.children)
+
+output = info.output_subscript
+colors = [np.random.rand(3) for i in range(n)]
+highlight = dict(zip(output,colors)) 
+fig = ctg.plot_tree(tree,return_fig=True,
+                    layout=layout,
+                    highlight=highlight,
+                    plot_leaf_labels=labels)
+fig.savefig(layout+'p{},n{}.pdf'.format(p,n))
+exit()
+
+
 true_us = chebyshev(true,'u',p)
-for j in range(2,p+1):
-    out_t = hp.contract(ft[j],ins) 
-    out_u = hp.contract(fu[j],ins) 
-    print('order={}, err={},{}'.format(j,true_ts[j]-out_t[1],true_us[j]-out_u[1]))
+for j in range(p+1):
+    out_t = hp.contract(ts[j],ins) 
+    out_u = hp.contract(us[j],ins) 
+    print('order={}, err={},{}'.format(j,true_ts[j]-out_t,true_us[j]-out_u))
