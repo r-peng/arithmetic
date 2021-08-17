@@ -99,3 +99,14 @@ def compressed_tn(xs,coeff,var_tensors,coords=None):
     inds = ['+{},'.format(N-1)]
     tn.add_tensor(qtn.Tensor(data=v,inds=inds,tags='fit'),tid=2*size+N)
     return tn
+def get_tensor(k,max_bond):
+    dim1 = 2 if k==1 else max_bond
+    scale = 1e-3
+    tmp = np.einsum('ka,ib->kiab',np.eye(dim1)+np.random.rand(dim1,dim1)*scale,
+                                  np.eye(2)+np.random.rand(2,2)*scale)
+    tmp = tmp.reshape(dim1,2,dim1*2)
+    if dim1*2>max_bond:
+        tmp = tmp[:,:,:max_bond]
+    tmp += np.random.rand(*tmp.shape)*scale
+    tmp = np.random.rand(*tmp.shape)
+    return tmp
