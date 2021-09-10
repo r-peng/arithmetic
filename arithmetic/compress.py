@@ -2,123 +2,65 @@ import numpy as np
 import math
 import quimb.tensor as qtn
 import quimb.tensor.tensor_core as qtc
-def next_add_inds(ks):
-    mod = len(ks)
-    new = []
-    for k in ks:
-        kl,kr = [],[]
-        for i,j in k:
-            i_,j_ = i+mod,j+mod
-            kl.append((i_,j))
-            kr.append((i,j_))
-        new.append(kl+kr)
-    return ks+new
-def get_add_inds(max_iter):
-    ks = [[(0,0)],[(1,0),(0,1)]]
-    for i in range(max_iter):
-        ks = next_add_inds(ks)
-    return ks
-def get_projector_exp(k,max_bond=None):
-    dim = 2**k
-    if max_bond is None:
-        out = np.zeros((dim,2,dim*2))
-        out[:,0,:dim] = np.eye(dim)
-        out[:,1,dim:] = np.eye(dim)
+import quimb.tensor.tensor_2d as qt2d
+def get_peps(tn,N,n):
+    arrays = []
+    for k in range(n):
+        row = []
+        for i in range(N):
+            array = tn.tensor_map[i*n+k].data.copy()
+            array = array.reshape(array.shape+(1,))
+            row.append(array)
+        arrays.append(row)
+    return qtn.PEPS(arrays,shape='dulrp')
+def contract_boundary(peps,from_which=None,**kwargs):
+    for i in range(peps.Lx):
+        for j in range(peps.Ly):
+            tid = peps._get_tids_from_tags(tags=peps.site_tag(i,j),which='any')
+            tid = tuple(tid)[0]
+            t = peps._pop_tensor(tid)
+            tmp = qtn.Tensor(data=np.array([1.0]),inds=[peps.site_ind(i,j)])
+            t = qtc.tensor_contract(t,tmp,preserve_tensor=True)
+            peps.add_tensor(t,tid=tid)
+#    print(peps)
+    if from_which is None:
+        return peps.contract_boundary(**kwargs)
     else:
-        dim1 = 2 if k==1 else max_bond
-        out = np.zeros((dim1,2,max_bond))
-        if max_bond<=dim:
-            out[:,0,:] = np.eye(max_bond)
-        elif max_bond<=2*dim:
-            out[:dim,0,:dim] = np.eye(dim)
-            remain = max_bond-dim
-            out[:remain,1,dim:] = np.eye(remain)
-        else: 
-            out[:dim,0,:dim] = np.eye(dim)
-            out[:dim,1,dim:2*dim] = np.eye(dim)
-    return out
-def get_add_exp(n,max_bond=None):
-    ks = get_add_inds(n-1)
-    max_bond = len(ks) if max_bond is None else max_bond
-    out = np.zeros((max_bond,)*3)
-    for k in range(max_bond):
-        for i,j in ks[k]:
-            out[i,j,k] = 1
-    return out
-def get_terminal_exp(n,max_bond=None):
-    max_bond = 2**n if max_bond is None else max_bond
-    out = np.zeros(max_bond)
-    out[-1] = 1
-    return out
-
-def get_projector_lin(k,max_bond=None):
-    if max_bond is None:
-        out = np.zeros((k+1,2,k+2))
-    else: 
-        dim1 = 2 if k==1 else max_bond
-        out = np.zeros((dim1,2,max_bond))
-    out[:k+1,0,:k+1] = np.eye(k+1)
-    out[k,1,k+1] = 1.0
-    return out
-def get_add_lin(n,max_bond=None):
-    max_bond = n+1 if max_bond is None else max_bond
-    fac = [math.factorial(k) for k in range(n+1)]
-    out = np.zeros((max_bond,)*3)
-    for k in range(n+1):
-        for i in range(k+1):
-            j = k-i
-            out[i,j,k] = fac[k]/(fac[i]*fac[j])
-    return out
-def get_terminal_lin(n,max_bond=None):
-    max_bond = n+1 if max_bond is None else max_bond
-    out = np.zeros(max_bond)
-    out[n] = 1
-    return out
-
-def get_projector_uniform(k,max_bond):
-    dim1 = 2 if k==1 else max_bond
-    return np.zeros((dim1,2,max_bond))
-def get_add_uniform(max_bond):
-    return np.zeros((max_bond,)*3)
-def get_terminal_uniform(max_bond):
-    return np.zeros(max_bond)
-
-scale = 1e-3
-scale = 0.0
-def get_projector(k,max_bond=None,scheme='lin'):
-    if scheme=='lin':
-        out = get_projector_lin(k,max_bond)
-    if scheme=='exp':
-        out = get_projector_exp(k,max_bond)
-    if scheme=='uniform':
-        out = get_projector_uniform(k,max_bond)
-    out += np.ones_like(out)*scale
-    return out
-def get_add(n,max_bond=None,scheme='lin'):
-    if scheme=='lin':
-        out = get_add_lin(n,max_bond)
-    if scheme=='exp':
-        out = get_add_exp(n,max_bond)   
-    if scheme=='uniform':
-        out = get_add_uniform(max_bond)   
-    out += np.ones_like(out)*scale
-    return out
-def get_terminal(n,max_bond=None,scheme='lin'):
-    if scheme=='lin':
-        out = get_terminal_lin(n,max_bond)
-    if scheme=='exp':
-        out = get_terminal_exp(n,max_bond)   
-    if scheme=='uniform':
-        out = get_terminal_uniform(max_bond)   
-    out += np.ones_like(out)*scale
-    return out
- 
-def compress(tn,Lx,Ly,linds,rinds,cutoff=0.0,max_bond=None):
+        peps = peps.contract_boundary_from(xrange=None,yrange=None,
+               from_which=from_which,**kwargs)
+        return peps.contract()
+def greedy_compress_optimizer(max_bond,**kwargs):
+    import cotengra as ctg
+    name = 'tmp'
+    ssa_func = ctg.path_greedy.trial_greedy_compressed
+    space = {
+        'coeff_size_compressed': {'type': 'FLOAT', 'min': 0.5, 'max': 2.0},
+        'coeff_size': {'type': 'FLOAT', 'min': 0.0, 'max': 1.0},
+        'coeff_size_inputs': {'type': 'FLOAT', 'min': -1.0, 'max': 1.0},
+        'score_size_inputs': {
+            'type': 'STRING',
+            'options': ['min', 'max', 'mean', 'sum', 'diff']},
+        'coeff_subgraph': {'type': 'FLOAT', 'min': -1.0, 'max': 1.0},
+        'score_subgraph': {
+            'type': 'STRING',
+            'options': ['min', 'max', 'mean', 'sum', 'diff']},
+        'coeff_centrality': {'type': 'FLOAT', 'min': -10.0, 'max': 10.0},
+        'centrality_combine': {
+            'type': 'STRING',
+            'options': ['min', 'max', 'mean']},
+        'score_centrality': {
+            'type': 'STRING',
+            'options': ['min', 'max', 'mean', 'diff']},
+        'temperature': {'type': 'FLOAT', 'min': -0.1, 'max': 1.0},
+    }
+    constants = {'chi': max_bond}
+    ctg.hyper.register_hyper_function(name=name,ssa_func=ssa_func,space=space,constants=constants)
+    return ctg.HyperOptimizer(methods=[name],**kwargs)
+def from_top(tn,Lx,Ly,linds=[],rinds=[],cutoff=0.0,max_bond=None):
     # tid[i,k] = i*n+k
     N,n = Lx,Ly
     def contr(i,k):
-        tid1 = i*n
-        tid2 = i*n+k
+        tid1,tid2 = i*n,i*n+k
         t1 = tn._pop_tensor(tid1)
         t2 = tn._pop_tensor(tid2)
         t12 = qtc.tensor_contract(t1,t2,preserve_tensor=True)
@@ -133,49 +75,36 @@ def compress(tn,Lx,Ly,linds,rinds,cutoff=0.0,max_bond=None):
     out = qtc.tensor_contract(*tn.tensors,output_inds=output_inds,
                               preserve_tensor=True)
     return out
-if __name__=='__main__': 
-    import functools
-    n = 5
-    N = 7
-    def poly(qs):
-        out = 1.0
-        for k in range(n):
-            pk = 0.0
-            for i in range(N):
-                pk += qs[k,i]
-            out *= pk
-        return out
-    def tn(qs,scheme):
-        tn = qtn.TensorNetwork([])
-        if scheme=='lin':
-            P = functools.partial(get_projector_lin,max_bond=None)
-            ADD = get_add_lin(n)
-            v = get_terminal_lin(n)
-        if scheme=='exp':
-            P = functools.partial(get_projector_exp,max_bond=None)
-            ADD = get_add_exp(n)
-            v = get_terminal_exp(n)
-        for i in range(N):
-            for k in range(n):
-                data = np.array([1,qs[k,i]])
-                inds = ('q{},{},'.format(i,k),)
-                tn.add_tensor(qtn.Tensor(data=data,inds=inds))
+def svd(tn,Lx,Ly,from_which='left',**kwargs):
+    N,n = Lx,Ly
+    def _svd(i,k):
+        tid1,tid2 = i*n,i*n+k
+        t1 = tn._pop_tensor(tid1)
+        t2 = tn._pop_tensor(tid2)
+        t12 = qtc.tensor_contract(t1,t2,preserve_tensor=True)
+        i1 = 'i{},0,'.format(i+1) if k==1 else 'k{},{},'.format(i+1,k-1)
+        right_inds = i1,'i{},{},'.format(i+1,k)
+        bond_ind = 'k{},{},'.format(i+1,k)
+        tl,tr = qtc.tensor_split(t12,left_inds=None,get='tensors',
+                                 right_inds=right_inds,bond_ind=bond_ind,**kwargs)
+        tn.add_tensor(tl,tid=tid1)
+        tid = (i+1)*n+k
+        t = tn._pop_tensor(tid)
+        t = qtc.tensor_contract(tr,t,preserve_tensor=True)
+        tn.add_tensor(t,tid=tid)
+    if from_which=='left':
+        for i in range(N-1): 
             for k in range(1,n):
-                i1 = 'q{},{},'.format(i,k-1) if k==1 else 'p{},{},'.format(i,k-1)
-                inds = i1,'q{},{},'.format(i,k),'p{},{},'.format(i,k)
-                tn.add_tensor(qtn.Tensor(data=P(k),inds=inds))
-        for i in range(1,N):
-            i1 = 'p{},{},'.format(i-1,n-1) if i==1 else '+{},'.format(i-1)
-            inds = i1,'p{},{},'.format(i,n-1),'+{},'.format(i)
-            tn.add_tensor(qtn.Tensor(data=ADD,inds=inds))
-        tn.add_tensor(qtn.Tensor(data=v,inds=('+{},'.format(N-1),)))
-        return tn.contract(output_inds=[])
-    print('#### exp ####')
-    qs = np.random.rand(n,N)
-    print(poly(qs)-tn(qs,scheme='exp'))
-    print('#### lin ####')
-    qs = np.zeros((n,N))
-    qs[0,:] = np.random.rand(N)
-    for i in range(1,n):
-        qs[i,:] = qs[0,:]
-    print(poly(qs)-tn(qs,scheme='lin'))
+                _svd(i,k)
+    elif from_which=='top':
+        for k in range(1,n):
+            for i in range(N-1): 
+                _svd(i,k)
+    tid1 = (N-1)*n
+    t12 = tn._pop_tensor(tid1)
+    for k in range(1,n):
+        tid2 = tid1+k
+        t2 = tn._pop_tensor(tid2)
+        t12 = qtc.tensor_contract(t12,t2,preserve_tensor=True)
+    tn.add_tensor(t12,tid=tid1)
+    return tn
