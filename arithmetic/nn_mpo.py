@@ -9,6 +9,31 @@ def get_CP(d):
     for i in range(d):
         out[i,i,i] = 1.0
     return out
+def get_data_ai(data,tmp):
+    return np.einsum('li,ijk->ljk',data[:,:,0],tmp)
+def get_data_an(data,tmp):
+    data = np.einsum('ijk,k->ij',data,tmp)
+    ldim,ddim = data.shape
+    return data.reshape(ldim,1,ddim)
+def modify(mpo,tmp,get_data):
+    site_tag = mpo._site_tag_id.format(mpo.L-1)
+    tid = list(mpo._get_tids_from_tags(site_tag,which='any'))[0]
+    t = mpo.tensor_map[tid]
+    uind = mpo._upper_ind_id.format(mpo.L-1)
+    dind = mpo._lower_ind_id.format(mpo.L-1)
+    lind = list(set(t._inds)-{uind,dind})[0]
+    t.transpose(lind,dind,uind,inplace=True)
+    data = get_data(t._data,tmp)
+    t.modify(data=data,inds=(lind,uind,dind))
+    return mpo 
+def rescale(mpo,value=1.0):
+    for tid in mpo.tensor_map:
+        t = mpo.tensor_map[tid]
+#        print(t.data.shape)
+        size = np.prod(np.array(t.data.shape))
+        mpo.strip_exponent(tid,value=np.sqrt(size)*value)
+#        mpo.strip_exponent(tid,value=size*value)
+    return mpo
 def get_weighted_sum1(X,ws,b):
     # weighted sum
     arrays = []
@@ -18,47 +43,29 @@ def get_weighted_sum1(X,ws,b):
             tmp = np.einsum('ipq,ijk->jkpq',tmp,ADD)
         arrays.append(tmp)
     tmp = np.einsum('ijk,i->jk',ADD,np.array([1.0,b]))
-    arrays.append(tmp)
-    return arrays
+    ldim,ddim = tmp.shape
+    arrays.append(tmp.reshape(ldim,1,ddim))
+    return qtn.MatrixProductOperator(arrays,shape='lrud')
 def get_weighted_sum(hs,ws,b,**compress_opts):
-    arrays = [t.copy() for t in hs[0]]
-    tmp = np.einsum('ijk,j->ik',CP2,np.array([1.0,ws[0]])).reshape(2,1,2)
-    arrays[-1] = np.einsum('...i,ijk->...jk',arrays[-1],tmp)
-    arrays = [np.ascontiguousarray(array) for array in arrays]
-    mpo = qtn.MatrixProductOperator(arrays,shape='lrud')
-    for i in range(1,len(ws)):
-        arrays = [t.copy() for t in hs[i]]
-        tmp = np.einsum('ijk,klm,j->ilm',CP2,ADD,np.array([1.0,ws[0]]))
-        arrays[-1] = np.einsum('...i,ijk->...jk',arrays[-1],tmp)
-        arrays = [np.ascontiguousarray(array) for array in arrays]
-        other = qtn.MatrixProductOperator(arrays,shape='lrud')
-        mpo = mpo._apply_mpo(other,compress=True,**compress_opts)
-    arrays = list(mpo.tensor_map.values())
-    arrays = [array.data for array in arrays]
-    tmp = np.einsum('ijk,j->ik',ADD,np.array([1.0,b]))
-    arrays[-1] = np.einsum('li,ik->lk',arrays[-1][:,0,:],tmp)
-    return arrays
+    for i in range(len(ws)):
+        other = hs[i].copy()
+        tmp = np.eye(2).reshape(2,1,2) if i==0 else ADD
+        tmp = np.einsum('ijk,klm,j->ilm',CP2,tmp,np.array([1.0,ws[i]]))
+        other = modify(other,tmp,get_data_ai)
+        mpo = other.copy() if i==0 else \
+              mpo._apply_mpo(other,compress=True,**compress_opts)
+        mpo = rescale(mpo)
+    mpo = modify(mpo,ADD,get_data_ai)
+    return modify(mpo,np.array([1.0,b]),get_data_an)
 def get_pol(h,coeff,**compress_opts):
     for i in range(len(coeff)-2,-1,-1):
-        arrays = [t.copy() for t in h]
+        other = h.copy()
         tmp = np.einsum('ijk,klm,l->ijm',CP2,ADD,np.array([1.0,coeff[i]])) 
-        arrays[-1] = np.einsum('...i,ijk->...jk',arrays[-1],tmp)
-        arrays = [np.ascontiguousarray(array) for array in arrays]
-        uind,lind = 'u{},'.format(i),'l{},'.format(i)
-        if i==len(coeff)-2:
-            mpo = qtn.MatrixProductOperator(arrays,shape='lrud',
-                  upper_ind_id=uind+'{}',lower_ind_id=lind+'{}')
-            print(mpo)
-        else:
-            other = qtn.MatrixProductOperator(arrays,shape='lrud',
-                  upper_ind_id=uind+'{}',lower_ind_id=lind+'{}')
-            print(other)
-            mpo = mpo._apply_mpo(other,compress=,**compress_opts)
-            print(mpo)
-    arrays = list(mpo.tensor_map.values())
-    arrays = [array.data for array in arrays]
-    arrays[-1] = np.einsum('lud,u->ld',arrays[-1],np.array([1.0,coeff[-1]]))
-    return arrays
+        other = modify(other,tmp,get_data_ai)
+        mpo = other.copy() if i==len(coeff)-2 else \
+              mpo._apply_mpo(other,compress=True,**compress_opts)
+        mpo = rescale(mpo)
+    return modify(mpo,np.array([1.0,coeff[-1]]),get_data_an)
 def get_layer1(xs,W,B,coeff,**compress_opts):
     # hi = Wijxj+Bi
     d = len(xs)
@@ -77,10 +84,17 @@ def get_layer(hs,W,B,coeff,**compress_opts):
         h = get_weighted_sum(hs,W[i,:],B[i],**compress_opts)
         ls.append(get_pol(h,coeff,**compress_opts))
     return ls
-def integrate(h,tr):
-    out = np.einsum('rud,u,d->r',h[0],tr,np.ones_like(tr))
-    for i in range(1,len(h)-1):
-        tmp = np.einsum('lrud,u,d->lr',h[i],tr,np.ones_like(tr))
-        out = np.einsum('l,lr->r',out,tmp)
-    return np.dot(out,h[-1][:,1])
-    
+def integrate(mpo,tr):
+    for i in range(mpo.L):
+        inds = [mpo._upper_ind_id.format(i)]
+        data = np.ones(1) if i==mpo.L-1 else tr
+        mpo.add(qtn.Tensor(data=data,inds=inds))
+        inds = [mpo._lower_ind_id.format(i)]
+        data = np.array([0.0,1.0]) if i==mpo.L-1 else np.ones_like(tr)
+        mpo.add(qtn.Tensor(data=data,inds=inds))
+    return qtn.tensor_contract(*mpo)*(10**mpo.exponent)
+def get_max(mpo):
+    out = []
+    for tid in mpo.tensor_map:
+         out.append(np.amax(np.abs(mpo.tensor_map[tid].data)))
+    return np.prod(np.array(out)), out
