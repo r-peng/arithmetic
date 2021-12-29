@@ -370,7 +370,10 @@ def get_exp_2d(A,xs,**split_opts): # get a 2d tn
                 T.modify(data=L.data,inds=L.inds)
                 tn.add_tensor(R,virtual=True)
     for i in range(N):
-        tn.add_tensor(qtn.Tensor(data=tr,inds=[tn.tensor_map[i].inds[0]]))
+        T = tn.tensor_map[i]
+        data = np.einsum('p...,p->...',T.data,tr)
+        T.modify(data=data,inds=T.inds[1:])
+#        tn.add_tensor(qtn.Tensor(data=tr,inds=[tn.tensor_map[i].inds[0]]))
     return tn        
 def get_exp_3d(A,xs,**split_opts): # get a 2d tn
     N,d = xs.shape 
