@@ -1,6 +1,7 @@
 import numpy as np
 import quimb.tensor as qtn
 from scipy.special import roots_legendre
+import os,pickle
 def permute_1d(peps,Lx):
     Ly = peps.num_tensors
     arrays = []
@@ -70,6 +71,7 @@ def contract(peps,from_which=None,**compress_opts):
         peps = peps.contract_boundary_from(xrange=None,yrange=None,
                from_which=from_which,**compress_opts)
         return peps.contract()
+
 def get_fac_ijkl(B,i,j,k,l):
     out  = B[i,j,k,l]+B[i,j,l,k]+B[i,k,j,l]+B[i,k,l,j]
     out += B[i,l,j,k]+B[i,l,k,j]+B[j,i,k,l]+B[j,i,l,k]
@@ -100,3 +102,34 @@ def exact(D):
     denom = 1.0/2.0*sum([np.log10(Di) for Di in D])
     return 10**(num-denom)
 
+def delete_tn_from_disc(fname):
+    try:
+        os.remove(fname)
+    except:
+        pass
+def load_tn_from_disc(fname):
+    with open(fname, 'rb') as f:
+        data = pickle.load(f)
+    tn = qtn.TensorNetwork([])
+    for tid,ten in data['tensors'].items():
+        T = qtn.Tensor(ten.data, inds=ten.inds, tags=ten.tags)
+        tn.add_tensor(T,tid=tid,virtual=True)
+    extra_props = dict()
+    for name,prop in data['tn_info'].items():
+        extra_props[name[1:]] = props
+    tn.exponent = data['exponent']
+    tn = tn.view_as_(data['class'], **extra_props)
+    return tn
+def write_tn_to_disc(tn,fname):
+    data = dict()
+    data['class'] = type(tn)
+    data['tensors'] = dict()
+    for tid,T in tn.tensor_map.items():
+        data['tensors'][tid] = T 
+    data['tn_info'] = dict()
+    for e in tn._EXTRA_PROPS:
+        data['tn_info'][e] = getattr(tn, e)
+    data['exponent'] = tn.exponent
+    with open(fname, 'wb') as f:
+        pickle.dump(data, f)
+    return 

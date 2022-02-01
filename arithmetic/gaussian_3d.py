@@ -460,9 +460,10 @@ def get_exp_2d(A,xs,tr,regularize=False,**split_opts): # get a 2d tn
         tn.add_tensor(Ti)
     return tn        
 ################# useful fxn below ###########################
-def get_exp(xs,tr,A,B=None,regularize=False):
+def get_exp(xs,tr,A,B=None,regularize=False,resolve_mode=None):
     N,d = xs.shape 
     Tmap = dict()
+    print('get 1-body terms...')
     for i in range(N):
         fac = A[i,i]
         xi = np.square(xs[i,:])
@@ -473,6 +474,7 @@ def get_exp(xs,tr,A,B=None,regularize=False):
             t_,e_ = get_data(fac,xi,regularize=regularize)
             t,e = np.einsum('i,i->i',t,t_),e+e_
         Tmap[i] = t,e
+    print('get 2-body terms...')
     for i in range(N):
         for j in range(i+1,N):
             fac = A[i,j]+A[j,i]
@@ -502,6 +504,7 @@ def get_exp(xs,tr,A,B=None,regularize=False):
                 t,e = np.einsum('ij,ij->ij',t,t_),e+e_
             Tmap[i,j] = t,e
     if B is not None:
+        print('get 3-body terms...')
         for i in range(N):
             for j in range(i+1,N):
                 for k in range(j+1,N):
@@ -526,6 +529,7 @@ def get_exp(xs,tr,A,B=None,regularize=False):
                     t_,e_ = get_data(fac,xi,xj,xk,regularize=regularize)
                     t,e = np.einsum('ijk,ijk->ijk',t,t_),e+e_
                     Tmap[i,j,k] = t,e
+        print('get 4-body terms...')
         for i in range(N):
             for j in range(i+1,N):
                 for k in range(j+1,N):
@@ -537,6 +541,7 @@ def get_exp(xs,tr,A,B=None,regularize=False):
                         xl = xs[l,:].copy()
                         Tmap[i,j,k,l] = get_data(fac,xi,xj,xk,xl,regularize=regularize)
 
+    print('merge 1-body terms...')
     for i in range(N):
         t1,e1 = Tmap[i]
         if i==N-1:
@@ -549,6 +554,7 @@ def get_exp(xs,tr,A,B=None,regularize=False):
             Tmap[i,j] = np.einsum('i,ij->ij',t1,t2),e1+e2
         Tmap.pop(i)
     if B is not None:
+        print('merge 2-body terms...')
         for i in range(N):
             for j in range(i+1,N):
                 t2,e2 = Tmap[i,j]
@@ -566,6 +572,7 @@ def get_exp(xs,tr,A,B=None,regularize=False):
                     t3,e3 = Tmap[i,j,k]
                     Tmap[i,j,k] = np.einsum('ij,ijk->ijk',t2,t3),e2+e3
                 Tmap.pop((i,j))
+        print('merge 3-body terms...')
         for i in range(N):
             for j in range(i+1,N):
                 for k in range(j+1,N):
@@ -592,8 +599,18 @@ def get_exp(xs,tr,A,B=None,regularize=False):
                         Tmap[i,j,k,l] = np.einsum('ijk,ijkl->ijkl',t3,t4),e3+e4
                     Tmap.pop((i,j,k))
     tn = qtn.TensorNetwork([])
+    print('constructing tn...')
     for key,(data,expo) in Tmap.items():
-        tn.add_tensor(qtn.Tensor(data=data,inds=['x{}'.format(i) for i in key]))
+        T = qtn.Tensor(data=data,inds=['x{}'.format(i) for i in key])
+        for i,pix in enumerate(T.inds[:-1]):
+            if i==0:
+                lix = [pix]
+            else:
+                lix = [bix,pix]
+            bix = qtn.rand_uuid()
+            Tl,T = T.split(lix,bond_ind=bix)
+            tn.add_tensor(Tl)
+        tn.add_tensor(T)
         if regularize:
             tn.exponent = tn.exponent + expo
             tn.equalize_norms_(1.0)
@@ -601,7 +618,8 @@ def get_exp(xs,tr,A,B=None,regularize=False):
     for i in range(N):
         tn.add_tensor(qtn.Tensor(data=tr[i,:],inds=['x{}'.format(i)]))
 #    print(tn)
-    tn.hyperinds_resolve_(mode='tree')
+    if resolve_mode is not None:
+        tn.hyperinds_resolve_(mode=resolve_mode)
     return tn
 def get_data(fac,*x_ls,regularize=False):
     nb = len(x_ls)
@@ -627,3 +645,6 @@ get_fac_iijj = utils.get_fac_iijj
 get_fac_iiij = utils.get_fac_iiij
 quad = utils.quad
 exact = utils.exact
+delete_tn_from_disc = utils.delete_tn_from_disc
+load_tn_from_disc = utils.load_tn_from_disc
+write_tn_to_disc = utils.write_tn_to_disc
