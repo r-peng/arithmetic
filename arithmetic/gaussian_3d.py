@@ -1,6 +1,8 @@
 import numpy as np
 import quimb.tensor as qtn
-import math
+import arithmetic.utils as utils
+import itertools
+np.set_printoptions(precision=4,suppress=True,linewidth=200)
 ADD = np.zeros((2,)*3)
 ADD[0,0,0] = ADD[1,0,1] = ADD[0,1,1] = 1.0
 CP2 = np.zeros((2,)*3)
@@ -175,6 +177,77 @@ def get_pol(A,xs,coeff,**split_opts):
                 T.modify(data=data,inds=inds)
         tn.add_tensor_network(Ei,virtual=True)
     return tn
+def get_exp_3d(A,xs,**split_opts): # get a 2d tn
+    N,d = xs.shape 
+    tr = np.ones(d)/d
+    # N=number of variable
+    # d=physical dimension
+    assert A.shape==(N,N)
+
+    tn = qtn.TensorNetwork([])
+    # off_diagonal terms, NN
+    CPd = np.zeros((d,)*3)
+    for i in range(d):
+        CPd[i,i,i] = 1.0
+    for i in range(N):
+        j = (i+1)%N
+        data = np.zeros((d,d))
+        for k in range(d):
+            for l in range(d):
+                data[k,l] = np.exp((A[i,j]+A[j,i])*xs[i,k]*xs[j,l])
+#        data,expo = get_data((A[i,j]+A[j,i]),xs[i,:]*xs[j,:])
+        inds = [qtn.rand_uuid() for i in data.shape] # pi,pj,oi
+        T = qtn.Tensor(data=data,inds=inds)
+        
+        ti,tj = qtn.tensor_split(T,T.inds[:1],right_inds=T.inds[1:],
+                        get='tensors',**split_opts)
+        tj.transpose_(*(tj.inds[1],tj.inds[0]))
+        if i==0:
+            tn.add_tensor(ti,tid=i)
+        else:
+            Ti = tn.tensor_map[i]
+            data = np.einsum('dl,dr->dlr',Ti.data,ti.data)
+            inds = Ti.inds+(ti.inds[1],)
+            Ti.modify(data=data,inds=inds)
+        if j==0:
+            Tj = tn.tensor_map[j]
+            data = np.einsum('dl,dr->dlr',tj.data,Tj.data)
+            inds = tj.inds+(Tj.inds[-1],)
+            Tj.modify(data=data,inds=inds)
+        else:
+            tn.add_tensor(tj,tid=j)
+#        tn.exponent = tn.exponent+expo
+    # diagonal terms
+    for i in range(N):
+        data = np.zeros(d)
+        for k in range(d):
+            data[k] = np.exp(A[i,i]*xs[i,k]**2)
+        Ti = tn.tensor_map[i]
+        data = np.einsum('dij,d->dij',Ti.data,data)
+        Ti.modify(data=data)
+    # off-diag terms
+    pix = [tn.tensor_map[i].inds[0] for i in range(N)]
+    for i in range(N):
+        j_range = range(i+2,N-1) if i==0 else range(i+2,N)
+        for j in j_range:
+            data = np.zeros((d,d))
+            for k in range(d):
+                for l in range(d):
+                    data[k,l] = np.exp((A[i,j]+A[j,i])*xs[i,k]*xs[j,l])
+            inds = [qtn.rand_uuid() for i in data.shape] # pi,pj,oi
+            T = qtn.Tensor(data=data,inds=inds)
+            ti,tj = qtn.tensor_split(T,T.inds[:1],right_inds=T.inds[1:],
+                            get='tensors',**split_opts)
+            tj.transpose_(*(tj.inds[1],tj.inds[0]))
+            for ix,t in {i:ti,j:tj}.items():
+                data = np.einsum('di,def->efi',t.data,CPd)
+                inds = qtn.rand_uuid(),pix[ix],t.inds[-1]
+                tags = {'x{}'.format(ix),'A{},{}'.format(i,j)}
+                tn.add_tensor(qtn.Tensor(data=data,inds=inds,tags=tags))
+                pix[ix] = inds[0]
+    for i in range(N):
+        tn.add_tensor(qtn.Tensor(data=tr,inds=[pix[i]]))
+    return tn        
 def _get_exp_2d(A,xs,**split_opts): # get a 2d tn
     N,d = xs.shape 
     tr = np.ones(d)/d
@@ -301,24 +374,21 @@ def _get_exp_2d(A,xs,**split_opts): # get a 2d tn
     for i in range(N):
         tn.add_tensor(qtn.Tensor(data=tr,inds=[tn.tensor_map[i].inds[0]]))
     return tn
-def get_exp_2d(A,xs,**split_opts): # get a 2d tn
+def get_exp_2d(A,xs,tr,regularize=False,**split_opts): # get a 2d tn
     N,d = xs.shape 
-    tr = np.ones(d)/d
     # N=number of variable
     # d=physical dimension
     assert A.shape==(N,N)
 
     tn = qtn.TensorNetwork([])
     # off_diagonal terms, NN
-#    CPd = np.zeros((d,)*3)
-#    for i in range(d):
-#        CPd[i,i,i] = 1.0
     for i in range(N):
         j = (i+1)%N
-        data = np.zeros((d,d))
-        for k in range(d):
-            for l in range(d):
-                data[k,l] = np.exp((A[i,j]+A[j,i])*xs[i,k]*xs[j,l])
+
+        fac = (A[i,j]+A[j,i])
+        xi,xj = xs[i,:],xs[j,:]
+        data,expo = get_data(fac,xi,xj,regularize=regularize)
+
         inds = [qtn.rand_uuid() for i in data.shape] # pi,pj,oi
         T = qtn.Tensor(data=data,inds=inds)
         ti,tj = qtn.tensor_split(T,T.inds[:1],right_inds=T.inds[1:],
@@ -338,22 +408,33 @@ def get_exp_2d(A,xs,**split_opts): # get a 2d tn
             Tj.modify(data=data,inds=inds)
         else:
             tn.add_tensor(tj,tid=j)
+        if regularize:
+            tn.exponent = tn.exponent + expo
+            tn.equalize_norms_(1.0)
+            tn.balance_bonds_()
+
     # diagonal terms
     for i in range(N):
-        data = np.zeros(d)
-        for k in range(d):
-            data[k] = np.exp(A[i,i]*xs[i,k]**2)
+        fac = A[i,i]
+        xi = np.square(xs[i,:])
+        data,expo = get_data(fac,xi,regularize=regularize)
+
         Ti = tn.tensor_map[i]
         data = np.einsum('dij,d->dij',Ti.data,data)
         Ti.modify(data=data)
+        if regularize:
+            tn.exponent = tn.exponent + expo
+            tn.equalize_norms_(1.0)
+            tn.balance_bonds_()
+
     # off-diag terms
     for i in range(N):
         j_range = range(i+2,N-1) if i==0 else range(i+2,N)
         for j in j_range:
-            data = np.zeros((d,d))
-            for k in range(d):
-                for l in range(d):
-                    data[k,l] = np.exp((A[i,j]+A[j,i])*xs[i,k]*xs[j,l])
+            fac = (A[i,j]+A[j,i])
+            xi,xj = xs[i,:],xs[j,:]
+            data,expo = get_data(fac,xi,xj,rgularize=regularize)
+
             inds = [qtn.rand_uuid() for i in data.shape] # pi,pj,oi
             T = qtn.Tensor(data=data,inds=inds)
             ti,tj = qtn.tensor_split(T,T.inds[:1],right_inds=T.inds[1:],
@@ -369,88 +450,180 @@ def get_exp_2d(A,xs,**split_opts): # get a 2d tn
                                        **split_opts)
                 T.modify(data=L.data,inds=L.inds)
                 tn.add_tensor(R,virtual=True)
+            if regularize:
+                tn.exponent = tn.exponent + expo
+                tn.equalize_norms_(1.0)
+                tn.balance_bonds_()
+    
     for i in range(N):
-        T = tn.tensor_map[i]
-        data = np.einsum('p...,p->...',T.data,tr)
-        T.modify(data=data,inds=T.inds[1:])
-#        tn.add_tensor(qtn.Tensor(data=tr,inds=[tn.tensor_map[i].inds[0]]))
+        Ti = qtn.Tensor(data=tr[i,:],inds=[tn.tensor_map[i].inds[0]])
+        tn.add_tensor(Ti)
     return tn        
-def get_exp_3d(A,xs,**split_opts): # get a 2d tn
+################# useful fxn below ###########################
+def get_exp(xs,tr,A,B=None,regularize=False):
     N,d = xs.shape 
-    tr = np.ones(d)/d
-    # N=number of variable
-    # d=physical dimension
-    assert A.shape==(N,N)
+    Tmap = dict()
+    for i in range(N):
+        fac = A[i,i]
+        xi = np.square(xs[i,:])
+        t,e = get_data(fac,xi,regularize=regularize)
+        if B is not None:
+            fac = B[i,i,i,i]
+            xi = np.square(xi)
+            t_,e_ = get_data(fac,xi,regularize=regularize)
+            t,e = np.einsum('i,i->i',t,t_),e+e_
+        Tmap[i] = t,e
+    for i in range(N):
+        for j in range(i+1,N):
+            fac = A[i,j]+A[j,i]
+            xi = xs[i,:].copy()
+            xj = xs[j,:].copy()
+            t,e = get_data(fac,xi,xj,regularize=regularize)
+            if B is not None:
+                #xi^3xj
+                fac = get_fac_iiij(B,i,j)
+                xi = np.square(xs[i,:])
+                xi = np.multiply(xi,xs[i,:])
+                xj = xs[j,:].copy()
+                t_,e_ = get_data(fac,xi,xj,regularize=regularize)
+                t,e = np.einsum('ij,ij->ij',t,t_),e+e_
+                #xixj^3
+                fac = get_fac_iiij(B,j,i)
+                xi = xs[i,:].copy()
+                xj = np.square(xs[j,:])
+                xj = np.multiply(xj,xs[j,:])
+                t_,e_ = get_data(fac,xi,xj,regularize=regularize)
+                t,e = np.einsum('ij,ij->ij',t,t_),e+e_
+                #xi^2xj^2
+                fac = get_fac_iijj(B,i,j)
+                xi = np.square(xs[i,:])
+                xj = np.square(xs[j,:])
+                t_,e_ = get_data(fac,xi,xj,regularize=regularize)
+                t,e = np.einsum('ij,ij->ij',t,t_),e+e_
+            Tmap[i,j] = t,e
+    if B is not None:
+        for i in range(N):
+            for j in range(i+1,N):
+                for k in range(j+1,N):
+                    # xi^2xjxk
+                    fac = get_fac_iijk(B,i,j,k)
+                    xi = np.square(xs[i,:])
+                    xj = xs[j,:].copy()
+                    xk = xs[k,:].copy()
+                    t,e = get_data(fac,xi,xj,xk,regularize=regularize)
+                    # xixj^2xk
+                    fac = get_fac_iijk(B,j,i,k)
+                    xi = xs[i,:].copy()
+                    xj = np.square(xs[j,:])
+                    xk = xs[k,:].copy()
+                    t_,e_ = get_data(fac,xi,xj,xk,regularize=regularize)
+                    t,e = np.einsum('ijk,ijk->ijk',t,t_),e+e_
+                    # xixjxk^2
+                    fac = get_fac_iijk(B,k,i,j)
+                    xi = xs[i,:].copy()
+                    xj = xs[j,:].copy()
+                    xk = np.square(xs[k,:])
+                    t_,e_ = get_data(fac,xi,xj,xk,regularize=regularize)
+                    t,e = np.einsum('ijk,ijk->ijk',t,t_),e+e_
+                    Tmap[i,j,k] = t,e
+        for i in range(N):
+            for j in range(i+1,N):
+                for k in range(j+1,N):
+                    for l in range(k+1,N):
+                        fac = get_fac_ijkl(B,i,j,k,l)
+                        xi = xs[i,:].copy()
+                        xj = xs[j,:].copy()
+                        xk = xs[k,:].copy()
+                        xl = xs[l,:].copy()
+                        Tmap[i,j,k,l] = get_data(fac,xi,xj,xk,xl,regularize=regularize)
 
+    for i in range(N):
+        t1,e1 = Tmap[i]
+        if i==N-1:
+            j = 0
+            t2,e2 = Tmap[j,i]
+            Tmap[j,i] = np.einsum('i,ji->ji',t1,t2),e1+e2
+        else:
+            j = N-1
+            t2,e2 = Tmap[i,j]
+            Tmap[i,j] = np.einsum('i,ij->ij',t1,t2),e1+e2
+        Tmap.pop(i)
+    if B is not None:
+        for i in range(N):
+            for j in range(i+1,N):
+                t2,e2 = Tmap[i,j]
+                if j==N-1:
+                    if i==N-2:
+                        k = 0
+                        t3,e3 = Tmap[k,i,j]
+                        Tmap[k,i,j] = np.einsum('ij,kij->kij',t2,t3),e2+e3
+                    else:
+                        k = N-2
+                        t3,e3 = Tmap[i,k,j]
+                        Tmap[i,k,j] = np.einsum('ij,ikj->ikj',t2,t3),e2+e3
+                else:
+                    k = N-1
+                    t3,e3 = Tmap[i,j,k]
+                    Tmap[i,j,k] = np.einsum('ij,ijk->ijk',t2,t3),e2+e3
+                Tmap.pop((i,j))
+        for i in range(N):
+            for j in range(i+1,N):
+                for k in range(j+1,N):
+                    t3,e3 = Tmap[i,j,k]
+                    if k==N-1:
+                        if j==N-2:
+                            if i==N-3:
+                                l = 0
+                                t4,e4 = Tmap[l,i,j,k]
+                                t,e = np.einsum('ijk,lijk->lijk',t3,t4),e3+e4
+                                Tmap[l,i,j,k] = t,e
+                            else:
+                                l = N-3
+                                t4,e4 = Tmap[i,l,j,k]
+                                t,e = np.einsum('ijk,iljk->iljk',t3,t4),e3+e4
+                                Tmap[i,l,j,k] = t,e
+                        else:
+                            l = N-2
+                            t4,e4 = Tmap[i,j,l,k]
+                            Tmap[i,j,l,k] = np.einsum('ijk,ijlk->ijlk',t3,t4),e3+e4
+                    else:
+                        l = N-1 
+                        t4,e4 = Tmap[i,j,k,l]
+                        Tmap[i,j,k,l] = np.einsum('ijk,ijkl->ijkl',t3,t4),e3+e4
+                    Tmap.pop((i,j,k))
     tn = qtn.TensorNetwork([])
-    # off_diagonal terms, NN
-    CPd = np.zeros((d,)*3)
-    for i in range(d):
-        CPd[i,i,i] = 1.0
+    for key,(data,expo) in Tmap.items():
+        tn.add_tensor(qtn.Tensor(data=data,inds=['x{}'.format(i) for i in key]))
+        if regularize:
+            tn.exponent = tn.exponent + expo
+            tn.equalize_norms_(1.0)
+            tn.balance_bonds_()
     for i in range(N):
-        j = (i+1)%N
-        data = np.zeros((d,d))
-        for k in range(d):
-            for l in range(d):
-                data[k,l] = np.exp((A[i,j]+A[j,i])*xs[i,k]*xs[j,l])
-        inds = [qtn.rand_uuid() for i in data.shape] # pi,pj,oi
-        T = qtn.Tensor(data=data,inds=inds)
-        ti,tj = qtn.tensor_split(T,T.inds[:1],right_inds=T.inds[1:],
-                        get='tensors',**split_opts)
-        tj.transpose_(*(tj.inds[1],tj.inds[0]))
-        if i==0:
-            tn.add_tensor(ti,tid=i)
-        else:
-            Ti = tn.tensor_map[i]
-            data = np.einsum('dl,dr->dlr',Ti.data,ti.data)
-            inds = Ti.inds+(ti.inds[1],)
-            Ti.modify(data=data,inds=inds)
-        if j==0:
-            Tj = tn.tensor_map[j]
-            data = np.einsum('dl,dr->dlr',tj.data,Tj.data)
-            inds = tj.inds+(Tj.inds[-1],)
-            Tj.modify(data=data,inds=inds)
-        else:
-            tn.add_tensor(tj,tid=j)
-    # diagonal terms
-    for i in range(N):
-        data = np.zeros(d)
-        for k in range(d):
-            data[k] = np.exp(A[i,i]*xs[i,k]**2)
-        Ti = tn.tensor_map[i]
-        data = np.einsum('dij,d->dij',Ti.data,data)
-        Ti.modify(data=data)
-    # off-diag terms
-    pix = [tn.tensor_map[i].inds[0] for i in range(N)]
-    for i in range(N):
-        j_range = range(i+2,N-1) if i==0 else range(i+2,N)
-        for j in j_range:
-            data = np.zeros((d,d))
-            for k in range(d):
-                for l in range(d):
-                    data[k,l] = np.exp((A[i,j]+A[j,i])*xs[i,k]*xs[j,l])
-            inds = [qtn.rand_uuid() for i in data.shape] # pi,pj,oi
-            T = qtn.Tensor(data=data,inds=inds)
-            ti,tj = qtn.tensor_split(T,T.inds[:1],right_inds=T.inds[1:],
-                            get='tensors',**split_opts)
-            tj.transpose_(*(tj.inds[1],tj.inds[0]))
-            for ix,t in {i:ti,j:tj}.items():
-                data = np.einsum('di,def->efi',t.data,CPd)
-                inds = qtn.rand_uuid(),pix[ix],t.inds[-1]
-                tags = {'x{}'.format(ix),'A{},{}'.format(i,j)}
-                tn.add_tensor(qtn.Tensor(data=data,inds=inds,tags=tags))
-                pix[ix] = inds[0]
-    for i in range(N):
-        tn.add_tensor(qtn.Tensor(data=tr,inds=[pix[i]]))
-    return tn        
-  
-def get_coeffs(a,M):
-    # M degree taylor approximation of exp(-x) from [0,2*a] centered at a
-    coeff = []
-    fac = [math.factorial(k) for k in range(M+1)]
-    for k in range(M+1):
-        out = 0.0
-        for l in range(M-k+1):
-            out += a**l/fac[l]
-        coeff.append(np.exp(a)*out/fac[k])
-    return coeff
+        tn.add_tensor(qtn.Tensor(data=tr[i,:],inds=['x{}'.format(i)]))
+#    print(tn)
+    tn.hyperinds_resolve_(mode='tree')
+    return tn
+def get_data(fac,*x_ls,regularize=False):
+    nb = len(x_ls)
+    d = len(x_ls[0])
+    id_ls = list(itertools.product(range(d),repeat=nb))
+    expo = np.zeros((d,)*nb)
+    for ids in id_ls:
+        x = np.array([x_ls[i][ids[i]] for i in range(nb)])
+        expo[ids] = fac*np.prod(x)
+    if regularize:
+        max_expo = np.amax(expo)
+        expo -= max_expo
+        max_expo /= np.log(10.0)   
+    else:
+        max_expo = 0.0
+    data = np.zeros((d,)*nb)
+    for ids in id_ls:
+        data[ids] = np.exp(expo[ids])
+    return data,max_expo
+get_fac_ijkl = utils.get_fac_ijkl
+get_fac_iijk = utils.get_fac_iijk
+get_fac_iijj = utils.get_fac_iijj
+get_fac_iiij = utils.get_fac_iiij
+quad = utils.quad
+exact = utils.exact
