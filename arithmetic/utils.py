@@ -96,11 +96,6 @@ def quad(a,b,n):
     w *= s
     x = np.array([xi*s+m for xi in x])
     return x,w
-def exact(D):
-    N = len(D)
-    num = N/2.0*np.log10(2.0*np.pi)
-    denom = 1.0/2.0*sum([np.log10(Di) for Di in D])
-    return 10**(num-denom)
 
 def delete_tn_from_disc(fname):
     try:

@@ -1,7 +1,7 @@
 import numpy as np
 import quimb.tensor as qtn
 import arithmetic.utils as utils
-import itertools
+import itertools,functools
 np.set_printoptions(precision=4,suppress=True,linewidth=200)
 ADD = np.zeros((2,)*3)
 ADD[0,0,0] = ADD[1,0,1] = ADD[0,1,1] = 1.0
@@ -460,87 +460,146 @@ def get_exp_2d(A,xs,tr,regularize=False,**split_opts): # get a 2d tn
         tn.add_tensor(Ti)
     return tn        
 ################# useful fxn below ###########################
-def get_exp(xs,tr,A,B=None,regularize=False,resolve_mode=None):
-    N,d = xs.shape 
+def get_1body(i,A,B,xs,regularize=False):
+    fac = A[i,i]
+    xi = np.square(xs[i,:])
+    t,e = get_data(fac,xi,regularize=regularize)
+    if B is not None:
+        fac = B[i,i,i,i]
+        xi = np.square(xi)
+        t_,e_ = get_data(fac,xi,regularize=regularize)
+        t,e = np.einsum('i,i->i',t,t_),e+e_
+    return i,(t,e)
+def get_2body(idx,A,B,xs,regularize=False):
+    i,j = idx
+    fac = A[i,j]+A[j,i]
+    xi = xs[i,:].copy()
+    xj = xs[j,:].copy()
+    t,e = get_data(fac,xi,xj,regularize=regularize)
+    if B is not None:
+        #xi^3xj
+        fac = get_fac_iiij(B,i,j)
+        xi = np.square(xs[i,:])
+        xi = np.multiply(xi,xs[i,:])
+        xj = xs[j,:].copy()
+        t_,e_ = get_data(fac,xi,xj,regularize=regularize)
+        t,e = np.einsum('ij,ij->ij',t,t_),e+e_
+        #xixj^3
+        fac = get_fac_iiij(B,j,i)
+        xi = xs[i,:].copy()
+        xj = np.square(xs[j,:])
+        xj = np.multiply(xj,xs[j,:])
+        t_,e_ = get_data(fac,xi,xj,regularize=regularize)
+        t,e = np.einsum('ij,ij->ij',t,t_),e+e_
+        #xi^2xj^2
+        fac = get_fac_iijj(B,i,j)
+        xi = np.square(xs[i,:])
+        xj = np.square(xs[j,:])
+        t_,e_ = get_data(fac,xi,xj,regularize=regularize)
+        t,e = np.einsum('ij,ij->ij',t,t_),e+e_
+    return tuple(idx),(t,e)
+def get_3body(idx,B,xs,regularize=False): 
+    i,j,k = idx
+    # xi^2xjxk
+    fac = get_fac_iijk(B,i,j,k)
+    xi = np.square(xs[i,:])
+    xj = xs[j,:].copy()
+    xk = xs[k,:].copy()
+    t,e = get_data(fac,xi,xj,xk,regularize=regularize)
+    # xixj^2xk
+    fac = get_fac_iijk(B,j,i,k)
+    xi = xs[i,:].copy()
+    xj = np.square(xs[j,:])
+    xk = xs[k,:].copy()
+    t_,e_ = get_data(fac,xi,xj,xk,regularize=regularize)
+    t,e = np.einsum('ijk,ijk->ijk',t,t_),e+e_
+    # xixjxk^2
+    fac = get_fac_iijk(B,k,i,j)
+    xi = xs[i,:].copy()
+    xj = xs[j,:].copy()
+    xk = np.square(xs[k,:])
+    t_,e_ = get_data(fac,xi,xj,xk,regularize=regularize)
+    t,e = np.einsum('ijk,ijk->ijk',t,t_),e+e_
+    return tuple(idx),(t,e)
+def get_4body(idx,B,xs,regularize=False):
+    i,j,k,l = idx
+    fac = get_fac_ijkl(B,i,j,k,l)
+    xi = xs[i,:].copy()
+    xj = xs[j,:].copy()
+    xk = xs[k,:].copy()
+    xl = xs[l,:].copy()
+    t,e = get_data(fac,xi,xj,xk,xl,regularize=regularize)
+    return tuple(idx),(t,e)
+def get_map(xs,A,B=None,regularize=False):
+    N,d = xs.shape
     Tmap = dict()
     print('get 1-body terms...')
     for i in range(N):
-        fac = A[i,i]
-        xi = np.square(xs[i,:])
-        t,e = get_data(fac,xi,regularize=regularize)
-        if B is not None:
-            fac = B[i,i,i,i]
-            xi = np.square(xi)
-            t_,e_ = get_data(fac,xi,regularize=regularize)
-            t,e = np.einsum('i,i->i',t,t_),e+e_
-        Tmap[i] = t,e
+        key,val = get_1body(i,A,B,xs,regularize=regularize)
+        Tmap[key] = val
     print('get 2-body terms...')
     for i in range(N):
         for j in range(i+1,N):
-            fac = A[i,j]+A[j,i]
-            xi = xs[i,:].copy()
-            xj = xs[j,:].copy()
-            t,e = get_data(fac,xi,xj,regularize=regularize)
-            if B is not None:
-                #xi^3xj
-                fac = get_fac_iiij(B,i,j)
-                xi = np.square(xs[i,:])
-                xi = np.multiply(xi,xs[i,:])
-                xj = xs[j,:].copy()
-                t_,e_ = get_data(fac,xi,xj,regularize=regularize)
-                t,e = np.einsum('ij,ij->ij',t,t_),e+e_
-                #xixj^3
-                fac = get_fac_iiij(B,j,i)
-                xi = xs[i,:].copy()
-                xj = np.square(xs[j,:])
-                xj = np.multiply(xj,xs[j,:])
-                t_,e_ = get_data(fac,xi,xj,regularize=regularize)
-                t,e = np.einsum('ij,ij->ij',t,t_),e+e_
-                #xi^2xj^2
-                fac = get_fac_iijj(B,i,j)
-                xi = np.square(xs[i,:])
-                xj = np.square(xs[j,:])
-                t_,e_ = get_data(fac,xi,xj,regularize=regularize)
-                t,e = np.einsum('ij,ij->ij',t,t_),e+e_
-            Tmap[i,j] = t,e
+            key,val = get_2body([i,j],A,B,xs,regularize=regularize)
+            Tmap[key] = val
     if B is not None:
         print('get 3-body terms...')
         for i in range(N):
             for j in range(i+1,N):
                 for k in range(j+1,N):
-                    # xi^2xjxk
-                    fac = get_fac_iijk(B,i,j,k)
-                    xi = np.square(xs[i,:])
-                    xj = xs[j,:].copy()
-                    xk = xs[k,:].copy()
-                    t,e = get_data(fac,xi,xj,xk,regularize=regularize)
-                    # xixj^2xk
-                    fac = get_fac_iijk(B,j,i,k)
-                    xi = xs[i,:].copy()
-                    xj = np.square(xs[j,:])
-                    xk = xs[k,:].copy()
-                    t_,e_ = get_data(fac,xi,xj,xk,regularize=regularize)
-                    t,e = np.einsum('ijk,ijk->ijk',t,t_),e+e_
-                    # xixjxk^2
-                    fac = get_fac_iijk(B,k,i,j)
-                    xi = xs[i,:].copy()
-                    xj = xs[j,:].copy()
-                    xk = np.square(xs[k,:])
-                    t_,e_ = get_data(fac,xi,xj,xk,regularize=regularize)
-                    t,e = np.einsum('ijk,ijk->ijk',t,t_),e+e_
-                    Tmap[i,j,k] = t,e
+                    key,val = get_3body([i,j,k],B,xs,regularize=regularize)
+                    Tmap[key] = val
         print('get 4-body terms...')
         for i in range(N):
             for j in range(i+1,N):
                 for k in range(j+1,N):
                     for l in range(k+1,N):
-                        fac = get_fac_ijkl(B,i,j,k,l)
-                        xi = xs[i,:].copy()
-                        xj = xs[j,:].copy()
-                        xk = xs[k,:].copy()
-                        xl = xs[l,:].copy()
-                        Tmap[i,j,k,l] = get_data(fac,xi,xj,xk,xl,regularize=regularize)
-
+                        key,val = get_4body([i,j,k,l],B,xs,regularize=regularize)
+                        Tmap[key] = val
+    return Tmap
+def get_map_parallel(xs,A,B=None,regularize=False,nworkers=5):
+    import multiprocessing
+    N,d = xs.shape
+    pool = multiprocessing.Pool(nworkers)
+    Tmap = dict()
+    print('get 1-body terms...')
+    keys = range(N)
+    get_term = functools.partial(get_1body,A=A,B=B,xs=xs,regularize=regularize)
+    ls = pool.map(get_term,keys)
+    for item in ls:
+        Tmap[item[0]] = item[1]
+    print('get 2-body terms...')
+    keys = []
+    for i in range(N):
+        for j in range(i+1,N):
+            keys.append((i,j))
+    get_term = functools.partial(get_2body,A=A,B=B,xs=xs,regularize=regularize)
+    ls = pool.map(get_term,keys)
+    for item in ls:
+        Tmap[item[0]] = item[1]
+    print('get 3-body terms...')
+    keys = []
+    for i in range(N):
+        for j in range(i+1,N):
+            for k in range(j+1,N):
+                keys.append((i,j,k))
+    get_term = functools.partial(get_3body,B=B,xs=xs,regularize=regularize)
+    ls = pool.map(get_term,keys)
+    for item in ls:
+        Tmap[item[0]] = item[1]
+    print('get 4-body terms...')
+    keys = []
+    for i in range(N):
+        for j in range(i+1,N):
+            for k in range(j+1,N):
+                for l in range(k+1,N):
+                    keys.append((i,j,k,l))
+    get_term = functools.partial(get_4body,B=B,xs=xs,regularize=regularize)
+    ls = pool.map(get_term,keys)
+    for item in ls:
+        Tmap[item[0]] = item[1]
+    return Tmap
+def merge_terms(Tmap,N,keep):
     print('merge 1-body terms...')
     for i in range(N):
         t1,e1 = Tmap[i]
@@ -553,7 +612,7 @@ def get_exp(xs,tr,A,B=None,regularize=False,resolve_mode=None):
             t2,e2 = Tmap[i,j]
             Tmap[i,j] = np.einsum('i,ij->ij',t1,t2),e1+e2
         Tmap.pop(i)
-    if B is not None:
+    if keep==4:
         print('merge 2-body terms...')
         for i in range(N):
             for j in range(i+1,N):
@@ -598,6 +657,9 @@ def get_exp(xs,tr,A,B=None,regularize=False,resolve_mode=None):
                         t4,e4 = Tmap[i,j,k,l]
                         Tmap[i,j,k,l] = np.einsum('ijk,ijkl->ijkl',t3,t4),e3+e4
                     Tmap.pop((i,j,k))
+    return Tmap
+def get_tn(Tmap,tr,regularize=False):
+    N,d = tr.shape
     tn = qtn.TensorNetwork([])
     print('constructing tn...')
     for key,(data,expo) in Tmap.items():
@@ -617,9 +679,16 @@ def get_exp(xs,tr,A,B=None,regularize=False,resolve_mode=None):
             tn.balance_bonds_()
     for i in range(N):
         tn.add_tensor(qtn.Tensor(data=tr[i,:],inds=['x{}'.format(i)]))
-#    print(tn)
-    if resolve_mode is not None:
-        tn.hyperinds_resolve_(mode=resolve_mode)
+    return tn
+def get_exp(xs,tr,A,B=None,regularize=False,nworkers=None):
+    N,d = xs.shape
+    if nworkers is None:
+        Tmap = get_map(xs,A,B=B,regularize=regularize)
+    else:
+        Tmap = get_map_parallel(xs,A,B=B,regularize=regularize,nworkers=nworkers)
+    keep = 2 if B is None else 4
+    Tmap = merge_terms(Tmap,N,keep)
+    tn = get_tn(Tmap,tr,regularize=regularize)
     return tn
 def get_data(fac,*x_ls,regularize=False):
     nb = len(x_ls)
@@ -639,12 +708,31 @@ def get_data(fac,*x_ls,regularize=False):
     for ids in id_ls:
         data[ids] = np.exp(expo[ids])
     return data,max_expo
+def exact(D):
+    N = len(D)
+    num = N/2.0*np.log10(2.0*np.pi)
+    denom = 1.0/2.0*sum([np.log10(Di) for Di in D])
+    return 10**(num-denom)
+def diag(xs,tr,Ad,Bd=None,regularize=False): 
+    N,d = xs.shape
+    prod = 1.0
+    for i in range(N):
+        fac = Ad[i]
+        xi = np.square(xs[i,:])
+        t,e = get_data(fac,xi,regularize=regularize)
+        if Bd is not None:
+            fac = Bd[i]
+            xi = np.square(xi)
+            t_,e_ = get_data(fac,xi,regularize=regularize)
+            t,e = np.einsum('i,i->i',t,t_),e+e_
+        prod *= np.einsum('i,i->',t,tr[i,:])
+        prod *= 10**e
+    return prod
 get_fac_ijkl = utils.get_fac_ijkl
 get_fac_iijk = utils.get_fac_iijk
 get_fac_iijj = utils.get_fac_iijj
 get_fac_iiij = utils.get_fac_iiij
 quad = utils.quad
-exact = utils.exact
 delete_tn_from_disc = utils.delete_tn_from_disc
 load_tn_from_disc = utils.load_tn_from_disc
 write_tn_to_disc = utils.write_tn_to_disc
