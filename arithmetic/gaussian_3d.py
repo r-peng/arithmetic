@@ -658,21 +658,54 @@ def merge_terms(Tmap,N,keep):
                         Tmap[i,j,k,l] = np.einsum('ijk,ijkl->ijkl',t3,t4),e3+e4
                     Tmap.pop((i,j,k))
     return Tmap
-def get_tn(Tmap,tr,regularize=False):
+def decompose_mps(T):
+    ls = []
+    for i,pix in enumerate(T.inds[:-1]):
+        if i==0:
+            lix = [pix]
+        else:
+            lix = [bix,pix]
+        bix = qtn.rand_uuid()
+        Tl,T = T.split(lix,bond_ind=bix)
+        ls.append(Tl)
+    ls.append(T)
+    return ls
+def decompose_tree(T):
+    assert len(T.inds)==4
+    Ls,Rs,dims = [],[],[]
+    bix = qtn.rand_uuid()
+    for ix in [1,2,3]:
+        lix = [T.inds[i] for i in [0,ix]]
+        L,R = T.split(lix,bond_ind=bix)
+        Ls.append(L)
+        Rs.append(R)
+        dims.append(L.shape[L.inds.index(bix)])
+    idx = dims.index(min(dims))
+    lst = []
+    for t in [Ls[idx],Rs[idx]]:
+        inds = list(t.inds)
+        inds.remove(bix)
+        ls,rs,dims = [],[],[]
+        bix_ = qtn.rand_uuid()
+        for lix in inds:
+            l,r = t.split([lix],bond_ind=bix_)
+            ls.append(l)
+            rs.append(r)
+            dims.append(l.shape[l.inds.index(bix_)])
+        idx = dims.index(min(dims))
+        lst.append(ls[idx]) 
+        lst.append(rs[idx]) 
+    return lst 
+def get_tn(Tmap,tr,regularize=False,decomp='tree'):
     N,d = tr.shape
     tn = qtn.TensorNetwork([])
+    decompose = decompose_tree if decomp=='tree' else decompose_mps
     print('constructing tn...')
     for key,(data,expo) in Tmap.items():
         T = qtn.Tensor(data=data,inds=['x{}'.format(i) for i in key])
-        for i,pix in enumerate(T.inds[:-1]):
-            if i==0:
-                lix = [pix]
-            else:
-                lix = [bix,pix]
-            bix = qtn.rand_uuid()
-            Tl,T = T.split(lix,bond_ind=bix)
-            tn.add_tensor(Tl)
-        tn.add_tensor(T)
+        ls = decompose(T)
+        for t in ls: 
+            tn.add_tensor(t)
         if regularize:
             tn.exponent = tn.exponent + expo
             tn.equalize_norms_(1.0)
@@ -686,9 +719,14 @@ def get_exp(xs,tr,A,B=None,regularize=False,nworkers=None):
         Tmap = get_map(xs,A,B=B,regularize=regularize)
     else:
         Tmap = get_map_parallel(xs,A,B=B,regularize=regularize,nworkers=nworkers)
-    keep = 2 if B is None else 4
+    if B is None:
+        keep = 2 
+        decomp = 'mps'
+    else:
+        keep = 4
+        decomp = 'tree'
     Tmap = merge_terms(Tmap,N,keep)
-    tn = get_tn(Tmap,tr,regularize=regularize)
+    tn = get_tn(Tmap,tr,regularize=regularize,decomp=decomp)
     return tn
 def get_data(fac,*x_ls,regularize=False):
     nb = len(x_ls)
