@@ -357,3 +357,35 @@ def contract(left,right,edges,tn,**compress_opts):
         tn.add_tensor(tsr)
     print(tn)
     return tn
+def get_tn1(x,y,z,beta,v_params,regularize=True):
+    N,g = x.shape
+    ls = list(itertools.product(range(g),repeat=3))
+    tn = qtn.TensorNetwork([])
+    coords = ['x','y','z']
+    for i in range(N):
+        for j in range(i+1,N):
+            data = np.zeros((g,)*6)
+            for (xi,yi,zi) in ls:
+                ri = np.array([x[i,xi],y[i,yi],z[i,zi]])
+                for (xj,yj,zj) in ls:
+                    rj = np.array([x[j,xj],y[j,yj],z[j,zj]])
+                    hij = morse(ri,rj,**v_params)
+                    data[xi,yi,zi,xj,yj,zj] = np.exp(-beta*hij)
+            if regularize:
+                data_max = np.amax(data)
+                data /= data_max
+                expo = np.log10(data_max)
+            else:
+                expo = 0.0
+            inds = [c+str(i) for c in coords]+[c+str(j) for c in coords] 
+            tags = set(inds).union({'exp'})
+            tn.add_tensor(qtn.Tensor(data=data.copy(),inds=inds,tags=tags))
+            tn.exponent = tn.exponent + expo
+    for i in range(N):
+        for c in ['x','y','z']:
+            inds = (c+str(i),)
+            tags = set(inds).union({'w'})
+            tn.add_tensor(qtn.Tensor(data=np.ones(g),inds=inds,tags=tags))
+    expo = tn.exponent
+    tn.exponent = 0.0
+    return tn,expo
