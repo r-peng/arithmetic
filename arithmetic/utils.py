@@ -1,7 +1,7 @@
 import numpy as np
 import quimb.tensor as qtn
 from scipy.special import roots_legendre
-import os,pickle
+import os,pickle,functools
 def permute_1d(peps,Lx):
     Ly = peps.num_tensors
     arrays = []
@@ -128,3 +128,32 @@ def write_tn_to_disc(tn,fname):
     with open(fname, 'wb') as f:
         pickle.dump(data, f)
     return 
+def compress_simplify_gauge(
+    tn,
+    compress_simplify_opts = {
+    'output_inds':[],
+    'atol':1e-15,
+    'simplify_sequence_a':'ADCRS',
+    'simplify_sequence_b':'RPL',
+    'hyperind_resolve_mode':'tree',
+    'hyperind_resolve_sort':'clustering',
+    'final_resolve':True,
+    'max_simplification_iterations':500,
+    'converged_tol':1e-6,
+    'equalize_norms':True,
+    'progbar':False},
+    gauge_opts={'max_iterations':500,'tol':1e-6},
+    max_iter = 10,
+):
+    thresh = 1e-6
+    tn.compress_simplify_(**compress_simplify_opts)
+    for i in range(max_iter):
+        nv,ne = tn.num_tensors,tn.num_indices
+        tn.gauge_all_simple_(**gauge_opts)
+        tn.compress_simplify_(**compress_simplify_opts)
+        if ((tn.num_tensors==1) or
+            (tn.num_tensors > (1.0-thresh)*nv and 
+             tn.num_indices > (1.0-thresh)*ne)):
+            break
+    tn.gauge_all_simple_(**gauge_opts)
+    return tn

@@ -2,7 +2,8 @@ import numpy as np
 import quimb.tensor as qtn
 import arithmetic.utils as utils
 import itertools,functools
-np.set_printoptions(precision=4,suppress=True,linewidth=200)
+from autoray import do
+np.set_printoptions(precision=6,suppress=True,linewidth=200)
 ADD = np.zeros((2,)*3)
 ADD[0,0,0] = ADD[1,0,1] = ADD[0,1,1] = 1.0
 CP2 = np.zeros((2,)*3)
@@ -459,6 +460,153 @@ def get_exp_2d(A,xs,tr,regularize=False,**split_opts): # get a 2d tn
         Ti = qtn.Tensor(data=tr[i,:],inds=[tn.tensor_map[i].inds[0]])
         tn.add_tensor(Ti)
     return tn        
+def decompose_exp(tn,**split_opts):
+    gauges = dict()
+    tensors = []
+    for tid,T in tn.tensor_map.items():
+        if len(T.inds)==2:
+            ls,gs = decompose_mps(T,**split_opts)
+        elif len(T.inds)==4:
+            ls,gs = decompose_mps(T,**split_opts)
+            #ls,gs = decompose_tree(T,**split_opts)
+        else:
+            ls,gs = [T],dict()
+        tensors += ls
+        gauges.update(gs)
+    return qtn.TensorNetwork(tensors),gauges
+def decompose_mps(T,**split_opts):
+    ls = []
+    gauges = dict()
+    for i,pix in enumerate(T.inds[:-1]):
+        if i==0:
+            lix = [pix]
+        else:
+            lix = [S.inds[0],pix]
+        L,S,T = T.split(lix,absorb=None,get='tensors',**split_opts)
+        print(S.data)
+        ls.append(L)
+        gauges[S.inds[0]] = S.data
+    ls.append(T)
+    return ls,gauges
+def decompose_tree(T,**split_opts):
+    assert len(T.inds)==4
+    gauges = dict()
+    for ix in [1,2,3]:
+        lix = [T.inds[i] for i in [0,ix]]
+        L,S,R = T.split(lix,absorb=None,get='tensors',**split_opts)
+        if ix==1:
+            Lmin,Smin,Rmin = L,S,R
+        else:
+            if len(S.data)<len(Smin.data):
+                Lmin,Smin,Rmin = L,S,R
+    gauges[Smin.inds[0]] = Smin.data 
+    ls = []
+    for t in [Lmin,Rmin]:
+        inds = list(t.inds)
+        inds.remove(Smin.inds[0])
+        for i,lix in enumerate(inds):
+            l,s,r = t.split([lix],absorb=None,get='tensors',**split_opts)
+            if i==0:
+                lmin,smin,rmin = l,s,r
+            else:
+                if len(s.data)<len(smin.data):
+                    lmin,smin,rmin = l,s,r
+        gauges[smin.inds[0]] = smin.data
+        ls += [lmin,rmin]
+    return ls,gauges 
+def gauge_all_simple(tn,max_iterations=5,tol=1e-6,smudge=1e-12,power=1.0,
+                     cutoff=1e-15):
+    """Iterative gauge all the bonds in this tensor network with a 'simple
+    update' like strategy.
+    """
+    # every index in the TN
+    inds = list(tn.ind_map)
+    # the vector 'gauges' that will live on the bonds
+    gauges = {}
+    # for retrieving singular values
+    info = {}
+    # accrue scaling to avoid numerical blow-ups
+    nfact = 0.0
+    it = 0
+    not_converged = True
+    while not_converged and it < max_iterations:
+        # can only converge if tol > 0.0
+        all_converged = tol > 0.0
+        for ind in inds:
+            try:
+                tid1, tid2 = tn.ind_map[ind]
+            except (KeyError, ValueError):
+                # fused multibond (removed) or not a bond (len(tids != 2))
+                continue
+            t1 = tn.tensor_map[tid1]
+            t2 = tn.tensor_map[tid2]
+            lix, bix, rix = qtn.group_inds(t1, t2)
+            bond = bix[0]
+            assert len(bix)==1
+            if len(bix) > 1:
+                # first absorb separate gauges
+                for ind in bix:
+                    s = gauges.pop(ind, None)
+                    if s is not None:
+                        t1.multiply_index_diagonal_(ind, s**0.5)
+                        t2.multiply_index_diagonal_(ind, s**0.5)
+                # multibond - fuse it
+                t1.fuse_({bond: bix})
+                t2.fuse_({bond: bix})
+            # absorb 'outer' gauges into tensors
+            inv_gauges = []
+            for t, ixs in ((t1, lix), (t2, rix)):
+                for ix in ixs:
+                    try:
+                        s = (gauges[ix] + smudge)**power
+                    except KeyError:
+                        continue
+                    t.multiply_index_diagonal_(ix, s)
+                    # keep track of how to invert gauge
+                    inv_gauges.append((t, ix, 1 / s))
+            # absorb the inner gauge, if it exists
+            if bond in gauges:
+                t1.multiply_index_diagonal_(bond, gauges[bond])
+            # perform SVD to get new bond gauge
+            qtn.tensor_compress_bond(
+                t1, t2, absorb=None, info=info, cutoff=cutoff)
+            s = info['singular_values'].data
+            smax = s[0]
+            new_gauge = s / smax
+            nfact = do('log10', smax) + nfact
+            if tol > 0.0:
+                # check convergence
+                old_gauge = gauges.get(bond,np.ones(1))
+                lold,lnew = len(old_gauge),len(new_gauge)
+                if lold<lnew:
+                    old_gauge_ = np.zeros(lnew)
+                    old_gauge_[:lold] = old_gauge
+                    sdiff = do('linalg.norm', old_gauge_ - new_gauge)
+                    sdiff /= np.sqrt(lnew)
+                elif lnew<lold:
+                    new_gauge_ = np.zeros(lold)
+                    new_gauge_[:lnew] = new_gauge
+                    sdiff = do('linalg.norm', old_gauge - new_gauge_)
+                    sdiff /= np.sqrt(lold)
+                else:
+                    sdiff = do('linalg.norm', old_gauge - new_gauge)
+                    sdiff /= np.sqrt(lnew)
+                all_converged &= sdiff < tol
+            # update inner gauge and undo outer gauges
+            gauges[bond] = new_gauge
+            for t, ix, inv_s in inv_gauges:
+                t.multiply_index_diagonal_(ix, inv_s)
+        not_converged = not all_converged
+        it += 1
+    # redistribute the accrued scaling
+    tn.multiply_each_(10**(nfact / tn.num_tensors))
+    # absorb all bond gauges
+    for ix, s in gauges.items():
+        t1, t2 = map(tn.tensor_map.__getitem__, tn.ind_map[ix])
+        s_1_2 = s**0.5
+        t1.multiply_index_diagonal_(ix, s_1_2)
+        t2.multiply_index_diagonal_(ix, s_1_2)
+    return tn
 ################# useful fxn below ###########################
 def get_1body(i,A,B,xs,regularize=False):
     fac = A[i,i]
@@ -530,6 +678,24 @@ def get_4body(idx,B,xs,regularize=False):
     xl = xs[l,:].copy()
     t,e = get_data(fac,xi,xj,xk,xl,regularize=regularize)
     return tuple(idx),(t,e)
+def get_data(fac,*x_ls,regularize=False):
+    nb = len(x_ls)
+    d = len(x_ls[0])
+    id_ls = list(itertools.product(range(d),repeat=nb))
+    expo = np.zeros((d,)*nb)
+    for ids in id_ls:
+        x = np.array([x_ls[i][ids[i]] for i in range(nb)])
+        expo[ids] = fac*np.prod(x)
+    if regularize:
+        max_expo = np.amax(expo)
+        expo -= max_expo
+        max_expo /= np.log(10.0)   
+    else:
+        max_expo = 0.0
+    data = np.zeros((d,)*nb)
+    for ids in id_ls:
+        data[ids] = np.exp(expo[ids])
+    return data,max_expo
 def get_map(xs,A,B=None,regularize=False):
     N,d = xs.shape
     Tmap = dict()
@@ -599,7 +765,7 @@ def get_map_parallel(xs,A,B=None,regularize=False,nworkers=5):
     for item in ls:
         Tmap[item[0]] = item[1]
     return Tmap
-def merge_terms(Tmap,N,keep):
+def merge_terms(Tmap,N):
     print('merge 1-body terms...')
     for i in range(N):
         t1,e1 = Tmap[i]
@@ -612,7 +778,8 @@ def merge_terms(Tmap,N,keep):
             t2,e2 = Tmap[i,j]
             Tmap[i,j] = np.einsum('i,ij->ij',t1,t2),e1+e2
         Tmap.pop(i)
-    if keep==4:
+    tmp = Tmap.get((0,1,2,3),None)
+    if tmp is not None:
         print('merge 2-body terms...')
         for i in range(N):
             for j in range(i+1,N):
@@ -658,94 +825,23 @@ def merge_terms(Tmap,N,keep):
                         Tmap[i,j,k,l] = np.einsum('ijk,ijkl->ijkl',t3,t4),e3+e4
                     Tmap.pop((i,j,k))
     return Tmap
-def decompose_mps(T):
-    ls = []
-    for i,pix in enumerate(T.inds[:-1]):
-        if i==0:
-            lix = [pix]
-        else:
-            lix = [bix,pix]
-        bix = qtn.rand_uuid()
-        Tl,T = T.split(lix,bond_ind=bix)
-        ls.append(Tl)
-    ls.append(T)
-    return ls
-def decompose_tree(T):
-    assert len(T.inds)==4
-    Ls,Rs,dims = [],[],[]
-    bix = qtn.rand_uuid()
-    for ix in [1,2,3]:
-        lix = [T.inds[i] for i in [0,ix]]
-        L,R = T.split(lix,bond_ind=bix)
-        Ls.append(L)
-        Rs.append(R)
-        dims.append(L.shape[L.inds.index(bix)])
-    idx = dims.index(min(dims))
-    lst = []
-    for t in [Ls[idx],Rs[idx]]:
-        inds = list(t.inds)
-        inds.remove(bix)
-        ls,rs,dims = [],[],[]
-        bix_ = qtn.rand_uuid()
-        for lix in inds:
-            l,r = t.split([lix],bond_ind=bix_)
-            ls.append(l)
-            rs.append(r)
-            dims.append(l.shape[l.inds.index(bix_)])
-        idx = dims.index(min(dims))
-        lst.append(ls[idx]) 
-        lst.append(rs[idx]) 
-    return lst 
-def get_tn(Tmap,tr,regularize=False,decomp='tree'):
-    N,d = tr.shape
-    tn = qtn.TensorNetwork([])
-    decompose = decompose_tree if decomp=='tree' else decompose_mps
-    print('constructing tn...')
-    for key,(data,expo) in Tmap.items():
-        T = qtn.Tensor(data=data,inds=['x{}'.format(i) for i in key])
-        ls = decompose(T)
-        for t in ls: 
-            tn.add_tensor(t)
-        if regularize:
-            tn.exponent = tn.exponent + expo
-            tn.equalize_norms_(1.0)
-            tn.balance_bonds_()
-    for i in range(N):
-        tn.add_tensor(qtn.Tensor(data=tr[i,:],inds=['x{}'.format(i)]))
-    return tn
 def get_exp(xs,tr,A,B=None,regularize=False,nworkers=None):
     N,d = xs.shape
     if nworkers is None:
         Tmap = get_map(xs,A,B=B,regularize=regularize)
     else:
         Tmap = get_map_parallel(xs,A,B=B,regularize=regularize,nworkers=nworkers)
-    if B is None:
-        keep = 2 
-        decomp = 'mps'
-    else:
-        keep = 4
-        decomp = 'tree'
-    Tmap = merge_terms(Tmap,N,keep)
-    tn = get_tn(Tmap,tr,regularize=regularize,decomp=decomp)
+    Tmap = merge_terms(Tmap,N)
+    tn = qtn.TensorNetwork([])
+    for key,(data,expo) in Tmap.items():
+        inds = ['x{}'.format(i) for i in key]
+        tags = set(inds).union({'exp'})
+        tn.add_tensor(qtn.Tensor(data=data,inds=inds,tags=tags))
+        tn.exponent = tn.exponent + expo
+    for i in range(N):
+        tn.add_tensor(qtn.Tensor(data=tr[i,:],inds=['x{}'.format(i)],tags='tr'))
     return tn
-def get_data(fac,*x_ls,regularize=False):
-    nb = len(x_ls)
-    d = len(x_ls[0])
-    id_ls = list(itertools.product(range(d),repeat=nb))
-    expo = np.zeros((d,)*nb)
-    for ids in id_ls:
-        x = np.array([x_ls[i][ids[i]] for i in range(nb)])
-        expo[ids] = fac*np.prod(x)
-    if regularize:
-        max_expo = np.amax(expo)
-        expo -= max_expo
-        max_expo /= np.log(10.0)   
-    else:
-        max_expo = 0.0
-    data = np.zeros((d,)*nb)
-    for ids in id_ls:
-        data[ids] = np.exp(expo[ids])
-    return data,max_expo
+
 def exact(D):
     N = len(D)
     num = N/2.0*np.log10(2.0*np.pi)
