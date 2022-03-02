@@ -125,16 +125,26 @@ def get_circular(tr,data_map,nworkers=5):
         arrs += arr_i
     tn = qtn.TensorNetwork(arrs)
     return tn
-def draw(tn,N,R=5.0):
+def draw(tn,R=5.0,N=None,nodes=None):
     theta = 2.0*np.pi/tn.num_tensors
     cnt = 0
     fixer = dict()
-    for i in range(N-1,-1,-1):
-        for j in range(N-1):
-            tags = 'r{}'.format(i),'I{}'.format(j)
-            fixer[tags] = np.sin(cnt*theta),np.cos(cnt*theta)
+    nodes = [[i] for i in range(N)] if nodes is None else nodes
+    nodes_map = dict()
+    for node in nodes:
+        nodes_map[min(node)] = node
+    keys = list(nodes_map.keys())
+    keys.sort(reverse=True)
+    color = []
+    for key in keys:
+        node = nodes_map[key]
+        rtag = tuple(['r{}'.format(i) for i in node])
+        color.append(rtag[0])
+        L = len(tn.select_tensors(rtag,which='any'))
+        for j in range(L):
+            tag = rtag+('I{}'.format(j),)
+            fixer[tag] = np.sin(cnt*theta),np.cos(cnt*theta)
             cnt += 1
-    color = ['r{}'.format(i) for i in range(N)]
     fig = tn.draw(fix=fixer,color=color,show_inds=False,show_tags=False,
                   return_fig=True)
     return fig
@@ -160,6 +170,71 @@ def contract(tn,N,alternate=True,**compress_opts):
         total_swap += num_swap
     print('total_swap=',total_swap)
     return tn.contract()
+def contract_parallel(tn,N,max_workers=20,**compress_opts):
+    nodes = [[i] for i in range(N)]
+    for node in nodes:
+        fname = 'N{}_tmp_'.format(N)+','.join([str(i) for i in node])
+        tag = ['r{}'.format(i) for i in node]
+        tni = tn.select(tag,which='any')
+        write_tn_to_disc(tni,fname)
+        
+    total_swap = 0
+    reverse = True
+    while len(nodes)>2:
+        print(nodes)
+        ls = []
+        while len(nodes)>=2:
+            c0 = nodes.pop()
+            c1 = nodes.pop()
+            c0.sort()
+            c1.sort()
+            ls.append((c0,c1))
+        nworkers = min(max_workers,len(ls))
+        pool = multiprocessing.Pool(nworkers)
+        fxn = functools.partial(contract_binary_wrapper,N=N,**compress_opts)
+        ls = pool.map(fxn,ls)
+        pool.close()
+        new_nodes = dict()
+        for (new_node,num_swap) in ls:
+            new_nodes[min(new_node)] = new_node
+            total_swap += num_swap
+        while len(nodes)>0:
+            node = nodes.pop()
+            new_nodes[min(node)] = node
+        keys = list(new_nodes.keys())
+        keys.sort(reverse=reverse)
+        nodes = [new_nodes[key] for key in keys]
+        reverse = not reverse
+
+    print(nodes)
+    node = nodes[0]
+    fname = 'N{}_tmp_'.format(N)+','.join([str(i) for i in node])
+    tn = load_tn_from_disc(fname)
+    delete_tn_from_disc(fname)
+    for node in nodes[1:]:
+        fname = 'N{}_tmp_'.format(N)+','.join([str(i) for i in node])
+        tn_ = load_tn_from_disc(fname)
+        delete_tn_from_disc(fname)
+        tn.add_tensor_network(tn_)
+#        tn0,num_swap = contract_binary(c0,c1,tn0,**compress_opts)
+    print(tn)
+    return tn,nodes,tn.contract() 
+def contract_binary_wrapper(info,N,**compress_opts):
+    c0,c1 = info
+    fname0 = 'N{}_tmp_'.format(N)+','.join([str(i) for i in c0])
+    fname1 = 'N{}_tmp_'.format(N)+','.join([str(i) for i in c1])
+    tn0 = load_tn_from_disc(fname0)
+    tn1 = load_tn_from_disc(fname1)
+    delete_tn_from_disc(fname0)
+    delete_tn_from_disc(fname1)
+    tn0.add_tensor_network(tn1)
+    tn,num_swap = contract_binary(c0,c1,tn0,**compress_opts)
+    print('nodes={},{},num swap={},max_bond={}'.format(c0,c1,num_swap,tn.max_bond()))
+    p = c0+c1
+    p.sort()
+    fname = 'N{}_tmp_'.format(N)+','.join([str(i) for i in p])
+    write_tn_to_disc(tn,fname)
+    return p,num_swap
 def contract_binary(c0,c1,tn,**compress_opts):
     # determin rel position of child nodes
     tag0 = ['r{}'.format(i) for i in list(c0)]
@@ -272,10 +347,22 @@ def contract_binary(c0,c1,tn,**compress_opts):
         tsrs = transpose(tsrs)
         arrs = [t.data for t in tsrs]
         mps = qtn.MatrixProductState(arrs,shape='lrp',tags=full_tag)
+        if mps.L<=2:
+            break
     # add to tn
     for j in range(mps.L):
         tsr = mps[mps.site_tag(j)]
-        tsr.reindex_({mps._site_ind_id.format(j):pixs[j]})
+        if j>0:
+            lix = '_'.join(full_tag)+'_I{},{}'.format(j-1,j)
+        if j<mps.L-1:
+            rix = '_'.join(full_tag)+'_I{},{}'.format(j,j+1)
+        if j==0:
+            inds = rix,pixs[j]
+        elif j==mps.L-1:
+            inds = lix,pixs[j]
+        else:
+            inds = lix,rix,pixs[j]
+        tsr.modify(inds=inds)
         tn.add_tensor(tsr)
     return tn,num_swap
 #def gen_path(N,g):
