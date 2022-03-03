@@ -1,4 +1,5 @@
 import numpy as np
+import matplotlib.pyplot as plt
 import quimb.tensor as qtn
 import cotengra as ctg
 import arithmetic.utils as utils
@@ -102,18 +103,17 @@ def get_1D(i,tr,data_map):
     arr = H_arr+T_arr
     pix = H_pix+T_pix
     ls = []
-    rtag = 'r{}'.format(i)
+    tag = 'r{}'.format(i)
     for j,data in enumerate(arr):
-        rix = rtag+'_'+pix[j]  +'_'+pix[j+1] if j<N-2 else None
-        lix = rtag+'_'+pix[j-1]+'_'+pix[j]   if j>0 else None
-        tags = rtag,'I{}'.format(j)
+        rix = tag+'_'+pix[j]  +'_'+pix[j+1] if j<N-2 else None
+        lix = tag+'_'+pix[j-1]+'_'+pix[j]   if j>0 else None
         if j==0:
             inds = rix,pix[j]
         elif j==N-2:
             inds = lix,pix[j]
         else:
             inds = lix,rix,pix[j] 
-        ls.append(qtn.Tensor(data=data,inds=inds,tags=tags))
+        ls.append(qtn.Tensor(data=data,inds=inds,tags={tag,'I{}'.format(j)}))
     return ls
 def get_circular(tr,data_map,nworkers=5):
     N,g = tr.shape
@@ -121,56 +121,58 @@ def get_circular(tr,data_map,nworkers=5):
     fxn = functools.partial(get_1D,tr=tr,data_map=data_map)
     ls = pool.map(fxn,range(N))
     arrs = []
-    for arr_i in ls:
-        arrs += arr_i
+    for arr_ in ls:
+        arrs += arr_
     tn = qtn.TensorNetwork(arrs)
     return tn
 def draw(tn,R=5.0,N=None,nodes=None):
-    theta = 2.0*np.pi/tn.num_tensors
-    cnt = 0
-    fixer = dict()
     nodes = [[i] for i in range(N)] if nodes is None else nodes
     nodes_map = dict()
     for node in nodes:
         nodes_map[min(node)] = node
     keys = list(nodes_map.keys())
     keys.sort(reverse=True)
-    color = []
+
+    theta = 2.0*np.pi/tn.num_tensors
+    cnt = 0
+    fixer = dict()
     for key in keys:
         node = nodes_map[key]
-        rtag = tuple(['r{}'.format(i) for i in node])
-        color.append(rtag[0])
-        L = len(tn.select_tensors(rtag,which='any'))
+        tag = 'r{}'.format(node[0])
+        L = len(tn.select_tensors(tag,which='any'))
         for j in range(L):
-            tag = rtag+('I{}'.format(j),)
-            fixer[tag] = np.sin(cnt*theta),np.cos(cnt*theta)
+            fixer[tag,'I{}'.format(j)] = np.sin(cnt*theta),np.cos(cnt*theta)
             cnt += 1
+    color = ['r{}'.format(node[0]) for node in nodes]
     fig = tn.draw(fix=fixer,color=color,show_inds=False,show_tags=False,
                   return_fig=True)
     return fig
-def contract(tn,N,alternate=True,**compress_opts):
-    ls = list(range(N))
-    if alternate:
-        order = []
-        while len(ls)>1:
-            order.append(ls.pop(0))
-            order.append(ls.pop(-1))
-        if len(ls)>0:
-            assert len(ls)==1
-            order.append(ls.pop())
-    else:
-        order = ls
-        order.reverse()
-    total_swap = 0
-    for i in range(1,N):
-        c0 = order[:i]
-        c1 = [order[i]]
-        tn,num_swap = contract_binary(c0,c1,tn,**compress_opts) 
-        print('i={},num swap={},max_bond={}'.format(i,num_swap,tn.max_bond()))
-        total_swap += num_swap
-    print('total_swap=',total_swap)
-    return tn.contract()
-def contract_parallel(tn,N,max_workers=20,**compress_opts):
+def gen_path(N):
+    stop = False
+    parents = (list(range(N)),)
+    order = []
+    while not stop:
+        parents_new = tuple()
+        pairs = [] 
+        for p in parents:
+           L = len(p)
+           l = int(L/2)
+           c1,c2 = p[:l],p[l:]
+           parents_new += (c1,c2)
+           pairs.append((c1,c2))
+        parents = parents_new
+        order.insert(0,pairs)
+        stop = True
+        for p in parents:
+            if len(p)>1:
+                stop = False
+                break
+    return order
+def contract(tn,order,max_workers=20,contract_final=True,save_as=None,
+             draw_tn=False,**compress_opts):
+    pair_fn = order.pop(-1)
+    pair_fn = pair_fn[0]
+    N = len(pair_fn[0])+len(pair_fn[1])
     nodes = [[i] for i in range(N)]
     for node in nodes:
         fname = 'N{}_tmp_'.format(N)+','.join([str(i) for i in node])
@@ -179,124 +181,119 @@ def contract_parallel(tn,N,max_workers=20,**compress_opts):
         write_tn_to_disc(tni,fname)
         
     total_swap = 0
-    reverse = True
-    while len(nodes)>2:
-        print(nodes)
-        ls = []
-        while len(nodes)>=2:
-            c0 = nodes.pop()
-            c1 = nodes.pop()
-            c0.sort()
-            c1.sort()
-            ls.append((c0,c1))
-        nworkers = min(max_workers,len(ls))
+    for step,pairs in enumerate(order):
+        print('step=',step,pairs)
+        nworkers = min(max_workers,len(pairs))
         pool = multiprocessing.Pool(nworkers)
         fxn = functools.partial(contract_binary_wrapper,N=N,**compress_opts)
-        ls = pool.map(fxn,ls)
+        ls = pool.map(fxn,pairs)
         pool.close()
-        new_nodes = dict()
-        for (new_node,num_swap) in ls:
-            new_nodes[min(new_node)] = new_node
+        fnames = []
+        for (fname,num_swap) in ls:
             total_swap += num_swap
-        while len(nodes)>0:
-            node = nodes.pop()
-            new_nodes[min(node)] = node
-        keys = list(new_nodes.keys())
-        keys.sort(reverse=reverse)
-        nodes = [new_nodes[key] for key in keys]
-        reverse = not reverse
+            fnames.append(fname)
+        if draw_tn:
+            tn = qtn.TensorNetwork([]) 
+            for fname in fnames:
+                tn.add_tensor_network(load_tn_from_disc(fname))
+            nodes = []
+            for pair in pairs:
+                nodes.append(pair[0]+pair[1])
+            fig = draw(tn,nodes=nodes)
+            fig.savefig('N{}_step{}.png'.format(N,step),dpi=300)
+            plt.close(fig)
+    print('num_swap=',total_swap)
 
-    print(nodes)
-    node = nodes[0]
-    fname = 'N{}_tmp_'.format(N)+','.join([str(i) for i in node])
-    tn = load_tn_from_disc(fname)
-    delete_tn_from_disc(fname)
-    for node in nodes[1:]:
-        fname = 'N{}_tmp_'.format(N)+','.join([str(i) for i in node])
-        tn_ = load_tn_from_disc(fname)
+    tn = qtn.TensorNetwork([])
+    for (fname,_) in ls:
+        tn.add_tensor_network(load_tn_from_disc(fname))
         delete_tn_from_disc(fname)
-        tn.add_tensor_network(tn_)
-#        tn0,num_swap = contract_binary(c0,c1,tn0,**compress_opts)
-    print(tn)
-    return tn,nodes,tn.contract() 
-def contract_binary_wrapper(info,N,**compress_opts):
-    c0,c1 = info
-    fname0 = 'N{}_tmp_'.format(N)+','.join([str(i) for i in c0])
+    if save_as is not None:
+        write_tn_to_disc(tn,save_as) 
+    if contract_final:
+        tn,num_swap = contract_binary(tn,*pair_fn,**compress_opts) 
+        total_swap += num_swap 
+        print('total_swap=',total_swap)
+        return tn.contract()
+    return tn
+def contract_binary_wrapper(pair,N,**compress_opts):
+    c1,c2 = pair
+    if len(c1)==0 or len(c2)==0:
+        fname = 'N{}_tmp_'.format(N)+','.join([str(i) for i in c1+c2])
+        return fname,0
     fname1 = 'N{}_tmp_'.format(N)+','.join([str(i) for i in c1])
-    tn0 = load_tn_from_disc(fname0)
-    tn1 = load_tn_from_disc(fname1)
-    delete_tn_from_disc(fname0)
+    fname2 = 'N{}_tmp_'.format(N)+','.join([str(i) for i in c2])
+    tn = load_tn_from_disc(fname1)
+    tn.add_tensor_network(load_tn_from_disc(fname2))
     delete_tn_from_disc(fname1)
-    tn0.add_tensor_network(tn1)
-    tn,num_swap = contract_binary(c0,c1,tn0,**compress_opts)
-    print('nodes={},{},num swap={},max_bond={}'.format(c0,c1,num_swap,tn.max_bond()))
-    p = c0+c1
+    delete_tn_from_disc(fname2)
+    tn,num_swap = contract_binary(tn,c1,c2,**compress_opts)
+    print('nodes={},{},num_swap={},max_bond={}'.format(c1,c2,num_swap,tn.max_bond()))
+    p = c1+c2
     p.sort()
     fname = 'N{}_tmp_'.format(N)+','.join([str(i) for i in p])
     write_tn_to_disc(tn,fname)
-    return p,num_swap
-def contract_binary(c0,c1,tn,**compress_opts):
+    return fname,num_swap
+def contract_binary(tn,c1,c2,**compress_opts):
     # determin rel position of child nodes
-    tag0 = ['r{}'.format(i) for i in list(c0)]
-    tag1 = ['r{}'.format(i) for i in list(c1)]
-    L0 = len(tn.select_tensors(tag0,which='any'))
+    c1,c2 = list(c1),list(c2)
+    tag1 = 'r{}'.format(c1[0])
+    tag2 = 'r{}'.format(c2[0])
     L1 = len(tn.select_tensors(tag1,which='any'))
-    h0,t0 = tn[tag0+['I{}'.format(0)]],tn[tag0+['I{}'.format(L0-1)]]
-    h1,t1 = tn[tag1+['I{}'.format(0)]],tn[tag1+['I{}'.format(L1-1)]]
-    t0h1 = not set(t0.inds).isdisjoint(set(h1.inds))
-    t1h0 = not set(t1.inds).isdisjoint(set(h0.inds))
-    assert t0h1 or t1h0
-    if t0h1:
-        left_tag,right_tag = tag0,tag1
-        left_L,right_L = L0,L1
+    L2 = len(tn.select_tensors(tag2,which='any'))
+    h1,t1 = tn[tag1,'I{}'.format(0)],tn[tag1,'I{}'.format(L1-1)]
+    h2,t2 = tn[tag2,'I{}'.format(0)],tn[tag2,'I{}'.format(L2-1)]
+    t1h2 = not set(t1.inds).isdisjoint(set(h2.inds))
+    t2h1 = not set(t2.inds).isdisjoint(set(h1.inds))
+    assert t1h2 or t2h1
+    if t1h2 and t2h1:
+        assert L1==L2
+        # cyclic
+        return contract_cyclic(tn,c1,c2,**compress_opts)
     else:
-        left_tag,right_tag = tag1,tag0
-        left_L,right_L = L1,L0
-
-    # merge tail of left
-    tag0,tag1 = left_tag+['I{}'.format(left_L-1)],left_tag+['I{}'.format(left_L-2)]
-    tn.contract_between(tag0,tag1)
-    # merge head of right
-    tag0,tag1 = right_tag+['I{}'.format(0)],right_tag+['I{}'.format(1)]
-    tn.contract_between(tag0,tag1)
-    # remove multibond & 2-leg tsrs 
-    tn.fuse_multibonds_()
-    rmin,lmax = 1,left_L-2
-    tag0,tag1 = left_tag+['I{}'.format(lmax)],right_tag+['I{}'.format(rmin)]
-    assert len(tn[tag0].inds)==len(tn[tag1].inds)
-    while len(tn[tag0].inds)<=2:
-        if tn.num_tensors>2:
-            tn.contract_between(tag0,tag1)
-            tag = tag0+tag1
-            rmin += 1
-            lmax -= 1
-            tag0,tag1 = left_tag+['I{}'.format(lmax)],right_tag+['I{}'.format(rmin)]
-            tn[tag].modify(tags=tag0)
-            tn.contract_tags(tag0,which='all',inplace=True)    
-            tn.fuse_multibonds_()
-        else:
+        cl,cr = (c1,c2) if t1h2 else (c2,c1)
+        return contract_open(tn,cl,cr,**compress_opts) 
+def contract_open(tn,cl,cr,**compress_opts):
+    ltag = 'r{}'.format(cl[0])
+    rtag = 'r{}'.format(cr[0])
+    Ll = len(tn.select_tensors(ltag,which='any'))
+    Lr = len(tn.select_tensors(rtag,which='any'))
+    rmin,lmax = 0,Ll-1
+    ltags = ltag,'I{}'.format(lmax)
+    rtags = rtag,'I{}'.format(rmin)
+    while len(tn[ltags].inds)<=2:
+        assert len(tn[ltags].inds)==len(tn[rtags].inds)
+        if tn.num_tensors<=2:
             return tn,0
+        tn.contract_between(ltags,rtags)
+        tags = ltags+rtags
+        rmin += 1
+        lmax -= 1
+        ltags = ltag,'I{}'.format(lmax)
+        rtags = rtag,'I{}'.format(rmin)
+        tn[tags].modify(tags=ltags)
+        tn.contract_tags(ltags,which='all',inplace=True)    
+        tn.fuse_multibonds_()
 
     left_tsr = []
     for j in range(lmax+1):
-        tags = left_tag+['I{}'.format(j)]
+        tags = ltag,'I{}'.format(j)
         tid = tuple(tn._get_tids_from_tags(tags,which='all'))[0]
         left_tsr.append(tn._pop_tensor(tid))
     right_tsr = []
-    for j in range(rmin,right_L):
-        tags = right_tag+['I{}'.format(j)]
+    for j in range(rmin,Lr):
+        tags = rtag,'I{}'.format(j)
         tid = tuple(tn._get_tids_from_tags(tags,which='all'))[0]
         right_tsr.append(tn._pop_tensor(tid))
-    full_tag = left_tag+right_tag
     # make full mps
     def transpose(ls):
         L = len(ls)
         for j in range(L):
             t = ls[j] 
             if j>0:
-                lix = tuple(t.bonds(tsrs[j-1]))[0]
+                lix = tuple(t.bonds(ls[j-1]))[0]
             if j<L-1:
-                rix = tuple(t.bonds(tsrs[j+1]))[0]
+                rix = tuple(t.bonds(ls[j+1]))[0]
             if j==0:
                 vix = (rix,)
             elif j==L-1:
@@ -308,47 +305,68 @@ def contract_binary(c0,c1,tn,**compress_opts):
             output_inds = vix+pix
             t.transpose_(*output_inds)
         return ls
+    full_tag = ['r{}'.format(i) for i in cl+cr]
     tsrs = left_tsr+right_tsr
     tsrs = transpose(tsrs)
-    arrs = [t.data for t in tsrs]
-    mps = qtn.MatrixProductState(arrs,shape='lrp',tags=full_tag)
-    # get edges
     pixs = [t.inds[-1] for t in tsrs]
-    edges = []
-    dists = []
-    for jl,e in enumerate(pixs):
-        if e not in edges:
-            for jr in range(jl+1,len(pixs)):
-                if pixs[jr]==e:
-                    edges.append(e)
-                    dists.append(jr-jl)
-    idxs = np.argsort(dists)
-    edges = [edges[j] for j in idxs] 
     num_swap = 0
-    for e in edges: # edges in addition to the left-right edge
-        assert mps.L==len(pixs)
-        site = []
-        for j,pix in enumerate(pixs):
-            if pix==e:
-                site.append(j)
-        assert len(site)==2
-        jl,jr = site
-        assert jl<jr
-        num_swap += jr-(jl+1)
-        pixs = pixs[:jl]+pixs[jl+1:jr]+pixs[jr+1:]
-        # mps swap & contract
-        mps.swap_site_to(i=jr,f=jl+1,inplace=True,**compress_opts)
-        old,new = mps._site_ind_id.format(jl+1),mps._site_ind_id.format(jl)
-        mps[mps.site_tag(jl+1)].reindex_({old:new})
-        mps.contract_between(mps.site_tag(jl),mps.site_tag(jl+1))
-        mps.contract_between(mps.site_tag(jl+1),mps.site_tag(jl+2))
-        tsrs = [mps[mps.site_tag(j)] 
-                for j in tuple(range(jl))+tuple(range(jl+2,mps.L))]
-        tsrs = transpose(tsrs)
+    while True: 
         arrs = [t.data for t in tsrs]
         mps = qtn.MatrixProductState(arrs,shape='lrp',tags=full_tag)
         if mps.L<=2:
             break
+        assert mps.L==len(pixs)
+        # get edge
+        edge_map = dict()
+        for jl,e in enumerate(pixs):
+            if e not in edge_map:
+                for jr in range(jl+1,len(pixs)):
+                    if pixs[jr]==e:
+                        edge_map[e] = jl,jr,jr-jl-1
+        if len(edge_map)==0:
+            break
+        edges = list(edge_map.keys())
+        dists = [edge_map[e][-1] for e in edges]
+        e = edges[np.argsort(dists)[0]]
+        jl,jr,d = edge_map[e]
+        pixs = pixs[:jl]+pixs[jl+1:jr]+pixs[jr+1:]
+        if d==0:
+            jt = jl-1 if jl>0 else jr+1
+            tags = [mps.site_tag(j) for j in [jl,jr,jt]]
+            mps.contract_tags(tags,which='any',inplace=True)
+            tsrs = [mps[mps.site_tag(j)] for j in range(jl)]
+            tsrs = tsrs+[mps[mps.site_tag(j)] for j in range(jr+1,mps.L)]
+        elif d%2==1:
+            jm = (jl+jr)//2
+            num_swap += d-1
+            mps.swap_site_to(i=jl,f=jm-1,inplace=True,**compress_opts)
+            mps.swap_site_to(i=jr,f=jm+1,inplace=True,**compress_opts)
+            old = mps._site_ind_id.format(jm-1)
+            new = mps._site_ind_id.format(jm+1)
+            tags = [mps.site_tag(j) for j in [jm-1,jm,jm+1]]
+            mps[mps.site_tag(jm-1)].reindex_({old:new})
+            mps.contract_tags(tags,which='any',inplace=True)
+            tsrs = [mps[mps.site_tag(j)] for j in range(jm-1)]
+            tsrs = tsrs+[mps[mps.site_tag(jm)]]
+            tsrs = tsrs+[mps[mps.site_tag(j)] for j in range(jm+2,mps.L)]
+        else:
+            jml,jmr = jl+d//2,jr-d//2
+            num_swap += d-2 
+            mps.swap_site_to(i=jl,f=jml-1,inplace=True,**compress_opts)
+            mps.swap_site_to(i=jr,f=jmr+1,inplace=True,**compress_opts)
+            old = mps._site_ind_id.format(jml-1)
+            new = mps._site_ind_id.format(jmr+1)
+            mps[mps.site_tag(jml-1)].reindex_({old:new})
+            mps.contract_between(mps.site_tag(jml),mps.site_tag(jml-1))
+            mps.contract_between(mps.site_tag(jmr),mps.site_tag(jmr+1))
+            mps.fuse_multibonds_()
+            mps.left_canonize(jml-1)
+            mps.right_canonize(jmr+1)
+            mps.compress_between(mps.site_tag(jml),mps.site_tag(jmr),**compress_opts)
+            tsrs = [mps[mps.site_tag(j)] for j in range(jml-1)]
+            tsrs = tsrs+[mps[mps.site_tag(j)] for j in [jml,jmr]]
+            tsrs = tsrs+[mps[mps.site_tag(j)] for j in range(jmr+2,mps.L)]
+        tsrs = transpose(tsrs)
     # add to tn
     for j in range(mps.L):
         tsr = mps[mps.site_tag(j)]
@@ -365,6 +383,158 @@ def contract_binary(c0,c1,tn,**compress_opts):
         tsr.modify(inds=inds)
         tn.add_tensor(tsr)
     return tn,num_swap
+def contract_cyclic(tn,c1,c2,**compress_opts):
+    tag1 = 'r{}'.format(c1[0])
+    tag2 = 'r{}'.format(c2[0])
+    L = tn.num_tensors//2
+    min2,max1 = 0,L-1
+    tags1 = tag1,'I{}'.format(max1)
+    tags2 = tag2,'I{}'.format(min2)
+    while len(tn[tags1].inds)<=2:
+        assert len(tn[tags1].inds)==len(tn[tags2].inds)
+        if tn.num_tensors<=2:
+            return tn,0
+        tn.contract_between(tags1,tags2)
+        tags = tags1+tags2
+        min2 += 1
+        max1 -= 1
+        tags1 = tag1,'I{}'.format(max1)
+        tags2 = tag2,'I{}'.format(min2)
+        tn[tags].modify(tags=tags1)
+        tn.contract_tags(tags1,which='all',inplace=True)    
+        tn.fuse_multibonds_()
+    min1,max2 = 0,L-1
+    tags1 = tag1,'I{}'.format(min1)
+    tags2 = tag2,'I{}'.format(max2)
+    while len(tn[tags1].inds)<=2:
+        assert len(tn[tags1].inds)==len(tn[tags2].inds)
+        if tn.num_tensors<=2:
+            return tn,0
+        tn.contract_between(tags1,tags2)
+        tags = tags1+tags2
+        min1 += 1
+        max2 -= 1
+        tags1 = tag1,'I{}'.format(min1)
+        tags2 = tag2,'I{}'.format(max2)
+        tn[tags].modify(tags=tags2)
+        tn.contract_tags(tags2,which='all',inplace=True)    
+        tn.fuse_multibonds_()
+    
+    tsrs1 = []
+    for j in range(min1,max1+1):
+        tags = tag1,'I{}'.format(j)
+        tid = tuple(tn._get_tids_from_tags(tags,which='all'))[0]
+        tsrs1.append(tn._pop_tensor(tid))
+    tsrs2 = []
+    for j in range(min2,max2+1):
+        tags = tag2,'I{}'.format(j)
+        tid = tuple(tn._get_tids_from_tags(tags,which='all'))[0]
+        tsrs2.append(tn._pop_tensor(tid))
+    def transpose(ls):
+        L = len(ls)
+        for j in range(L):
+            tl,t,tr = ls[(j-1)%L],ls[j],ls[(j+1)%L]
+            lix = tuple(t.bonds(tl))[0]
+            rix = tuple(t.bonds(tr))[0]
+            pix = tuple(set(t.inds).difference({lix,rix}))[0]
+            t.transpose_(lix,rix,pix)
+        return ls
+    tsrs = tsrs1+tsrs2
+    tsrs = transpose(tsrs)
+    pixs = [t.inds[-1] for t in tsrs]
+    num_swap = 0
+    while True:
+        edge_map = dict()
+        for jl,e in enumerate(pixs):
+            if e not in edge_map:
+                for jr in range(jl+1,len(pixs)):
+                    if pixs[jr]==e:
+                        d1 = jr-jl-1
+                        d2 = len(pixs)-d1-2
+                        edge_map[e] = (jl,jr),(d1,d2)
+        edges = list(edge_map.keys())
+        dists = [min(edge_map[e][-1]) for e in edges]
+        e = edges[np.argsort(dists)[0]]
+        (jl,jr),(d1,d2) = edge_map[e]
+        d = min(d1,d2)
+        if d1>d2:
+            tsrs = tsrs[jl+1:]+tsrs[:jl+1]
+            pixs = pixs[jl+1:]+pixs[:jl+1]
+            jl,jr = d1,len(tsrs)-1
+        arrs = [t.data for t in tsrs]
+        mps = qtn.MatrixProductState(arrs,shape='lrp')
+        if mps.L<=4:
+            break
+        assert mps.L==len(pixs)
+#        print('edge=',e)
+#        print(pixs)
+#        print(mps)
+#        print('len={},max_bond={}'.format(len(pixs),mps.max_bond()))
+        pixs = pixs[:jl]+pixs[jl+1:jr]+pixs[jr+1:]
+        if d==0:
+            jt = jl-1 if jl>0 else jr+1
+            tags = [mps.site_tag(j) for j in [jl,jr,jt]]
+            mps.contract_tags(tags,which='any',inplace=True)
+            tsrs = [mps[mps.site_tag(j)] for j in range(jl)]
+            tsrs = tsrs+[mps[mps.site_tag(j)] for j in range(jr+1,mps.L)]
+        elif d%2==1:
+            jm = (jl+jr)//2
+            num_swap += d-1
+            mps.swap_site_to(i=jl,f=jm-1,inplace=True,**compress_opts)
+            mps.swap_site_to(i=jr,f=jm+1,inplace=True,**compress_opts)
+            old = mps._site_ind_id.format(jm-1)
+            new = mps._site_ind_id.format(jm+1)
+            tags = [mps.site_tag(j) for j in [jm-1,jm,jm+1]]
+            mps[mps.site_tag(jm-1)].reindex_({old:new})
+            mps.contract_tags(tags,which='any',inplace=True)
+            tsrs = [mps[mps.site_tag(j)] for j in range(jm-1)]
+            tsrs = tsrs+[mps[mps.site_tag(jm)]]
+            tsrs = tsrs+[mps[mps.site_tag(j)] for j in range(jm+2,mps.L)]
+        else:
+            jml,jmr = jl+d//2,jr-d//2
+            num_swap += d-2 
+            mps.swap_site_to(i=jl,f=jml-1,inplace=True,**compress_opts)
+            mps.swap_site_to(i=jr,f=jmr+1,inplace=True,**compress_opts)
+            old = mps._site_ind_id.format(jml-1)
+            new = mps._site_ind_id.format(jmr+1)
+            mps[mps.site_tag(jml-1)].reindex_({old:new})
+            mps.contract_between(mps.site_tag(jml),mps.site_tag(jml-1))
+            mps.contract_between(mps.site_tag(jmr),mps.site_tag(jmr+1))
+            mps.fuse_multibonds_()
+            mps.left_canonize(jml-1)
+            mps.right_canonize(jmr+1)
+            mps.compress_between(mps.site_tag(jml),mps.site_tag(jmr),**compress_opts)
+            tsrs = [mps[mps.site_tag(j)] for j in range(jml-1)]
+            tsrs = tsrs+[mps[mps.site_tag(j)] for j in [jml,jmr]]
+            tsrs = tsrs+[mps[mps.site_tag(j)] for j in range(jmr+2,mps.L)]
+        tsrs = transpose(tsrs)
+    assert(len(tsrs))==len(pixs) 
+    for j,t in enumerate(tsrs):
+        t.reindex_({t.inds[-1]:pixs[j]}) 
+        tn.add_tensor(t)
+    return tn,num_swap
+def contract_serial(tn,N,alternate=True,**compress_opts):
+    ls = list(range(N))
+    if alternate:
+        order = []
+        while len(ls)>1:
+            order.append(ls.pop(0))
+            order.append(ls.pop(-1))
+        if len(ls)>0:
+            assert len(ls)==1
+            order.append(ls.pop())
+    else:
+        order = ls
+        order.reverse()
+    total_swap = 0
+    for i in range(1,N):
+        c1 = order[:i]
+        c2 = [order[i]]
+        tn,num_swap = contract_binary(c1,c2,tn,**compress_opts) 
+        print('i={},num swap={},max_bond={}'.format(i,num_swap,tn.max_bond()))
+        total_swap += num_swap
+    print('total_swap=',total_swap)
+    return tn.contract()
 #def gen_path(N,g):
 #    inputs = []
 #    size_dict = {}
