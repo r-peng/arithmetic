@@ -111,7 +111,7 @@ def load_tn_from_disc(fname):
         tn.add_tensor(T,tid=tid,virtual=True)
     extra_props = dict()
     for name,prop in data['tn_info'].items():
-        extra_props[name[1:]] = props
+        extra_props[name[1:]] = prop
     tn.exponent = data['exponent']
     tn = tn.view_as_(data['class'], **extra_props)
     return tn

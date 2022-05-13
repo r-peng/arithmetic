@@ -1,4 +1,212 @@
 
+def get_cheb_coeff(fxn,order):
+    N = order + 1
+    c = []
+    theta = [np.pi*(k-0.5)/N for k in range(1,N+1)]
+    for j in range(order+1):
+        v1 = np.array([fxn(np.cos(thetak)) for thetak in theta])
+        v2 = np.array([np.cos(j*thetak) for thetak in theta])
+        c.append(np.dot(v1,v2)*2./N)
+    coeff = np.polynomial.chebyshev.cheb2poly(c)
+    coeff[0] -= 0.5*c[0]
+    print(coeff)
+    print([1./scipy.math.factorial(i) for i in range(order+1)])
+    return list(coeff)
+def _get_full_propagator(tni,nstep):
+    nf = tni.num_tensors-1
+    norb = tni['T0'].shape[tni['T0'].inds.index('p')]
+    ng = tni['T1'].shape[tni['T1'].inds.index('x0')]
+    tn = qtn.TensorNetwork([])
+    sCP2 = np.zeros((2,)*3)
+    sCP2[0,0,0] = 1./norb
+    sCP2[1,1,1] = 1.
+    for i in range(1,nstep):
+        lix = 'i0' if i==1 else f'i{i-1},{i}'
+        rix = 'k' if i==nstep-1 else f'i{i},{i+1}'
+        tn.add_tensor(qtn.Tensor(data=sCP2,inds=(lix,f'i{i}',rix),
+                                 tags={'CP',f's{i}'}))
+    vix = [qtn.rand_uuid() for i in range(nstep-1)]
+    for i in range(nstep):
+        tni_ = tni.copy()
+        tni_.add_tag(f's{i}')
+        pnew = 'p' if i==nstep-1 else vix[i]
+        qnew = 'q' if i==0 else vix[i-1]
+        index_map = {'p':pnew,'q':qnew,'k':f'i{i}'}
+        index_map.update({f'x{g}':f's{i},x{g}' for g in range(nf)})
+        tni_.reindex_(index_map)
+        tn.add_tensor_network(tni_,check_collisions=True)
+    return tn
+def get_full_propagator(tni,nstep,**compress_opts):
+    nf = tni.num_tensors-1
+    norb = tni['T0'].shape[tni['T0'].inds.index('p')]
+    ng = tni['T1'].shape[tni['T1'].inds.index('x0')]
+    tn = qtn.TensorNetwork([])
+    vix = [qtn.rand_uuid() for i in range(nstep-1)]
+    sdel = np.eye(2)    
+    sdel[0,0] *= 1./norb
+    for i in range(nstep):
+        tni_ = tni.copy()
+        tni_.add_tag(f's{i}')
+        pnew = 'p' if i==nstep-1 else vix[i]
+        qnew = 'q' if i==0 else vix[i-1]
+        index_map = {'p':pnew,'q':qnew,'k':f'i{i}'}
+        index_map.update({f'x{g}':f's{i},x{g}' for g in range(nf)})
+        tni_.reindex_(index_map)
+        tn.add_tensor_network(tni_,check_collisions=True)
+        # add 1/norb scaling
+        if i>0: 
+            tn['T0',f's{i}'].reindex_({f'i{i}':f'i{i}_'})
+            tn.add_tensor(qtn.Tensor(data=sdel,inds=(f'i{i}_',f'i{i}'),
+                                     tags={'T0',f's{i}'}))
+            tn.contract_tags(('T0',f's{i}'),which='all',inplace=True)
+            lix = 'i0' if i==1 else f'i{i-1},{i}'
+            rix = 'k' if i==nstep-1 else f'i{i},{i+1}'
+            tn.add_tensor(qtn.Tensor(data=CP2,inds=(lix,f'i{i}',rix),
+                                     tags={'CP2',f's{i}'}))
+    print(tn)
+    Ti = tn['T0','s0']
+    Tl,Tq = Ti.split(left_inds=None,right_inds=('q','i0'),absorb='right',**compress_opts)
+    Ti.modify(data=Tl.data,inds=Tl.inds)
+    xix = Tq.inds[0]
+    for i in range(1,nstep-1):
+        Ti = tn['CP2',f's{i}']
+        blob = qtn.tensor_contract(Tq,Ti)
+        Tl,Tq = blob.split(left_inds=None,right_inds=('q',f'i{i},{i+1}'),absorb='right',**compress_opts)
+        Ti.modify(data=Tl.data,inds=Tl.inds)
+    Ti = tn['T0',f's{nstep-1}']
+    Tl,Tp = Ti.split(left_inds=None,right_inds=('p',f'i{nstep-1}'),absorb='right',**compress_opts)
+#    Ti.modify(data=Tl.data,inds=Tl.inds)
+#    yix = Tp.inds[0]
+#    Ti = tn['CP2',f's{i}']
+#    blob = qtn.tensor_contract()
+def get_full_propagator(tni,nstep,**compress_opts):
+    nf = tni.num_tensors-1
+    norb = tni['T0'].shape[tni['T0'].inds.index('p')]
+    ng = tni['T1'].shape[tni['T1'].inds.index('x0')]
+    tn = qtn.TensorNetwork([])
+    vix = [qtn.rand_uuid() for i in range(nstep-1)]
+    sdel = np.eye(2)    
+    sdel[0,0] *= 1./norb
+    for i in range(nstep):
+        tni_ = tni.copy()
+        tni_.add_tag(f's{i}')
+        pnew = 'p' if i==nstep-1 else vix[i]
+        qnew = 'q' if i==0 else vix[i-1]
+        index_map = {'p':pnew,'q':qnew,'k':f'i{i}'}
+        index_map.update({f'x{g}':f's{i},x{g}' for g in range(nf)})
+        tni_.reindex_(index_map)
+        tn.add_tensor_network(tni_,check_collisions=True)
+        # add 1/norb scaling
+        if i>0: 
+            tn['T0',f's{i}'].reindex_({f'i{i}':f'i{i}_'})
+            tn.add_tensor(qtn.Tensor(data=sdel,inds=(f'i{i}_',f'i{i}'),
+                                     tags={'T0',f's{i}'}))
+            tn.contract_tags(('T0',f's{i}'),which='all',inplace=True)
+            lix = 'i0' if i==1 else f'i{i-1},{i}'
+            rix = 'k' if i==nstep-1 else f'i{i},{i+1}'
+            tn.add_tensor(qtn.Tensor(data=CP2,inds=(lix,f'i{i}',rix)))
+    print(tn)
+    lixs = [('i0','q'),(f'i{nstep-1}','p')]
+    tags = ['s0',f's{nstep-1}']
+    U,S,V = dict(),dict(),dict() 
+    for lix,tag in zip(lixs,tags):
+        Tl,Tr = tn['T0',tag].split(lix,absorb='left',**compress_opts)
+        tn['T0',tag].modify(data=Tr.data,inds=Tr.inds)
+        Tl.transpose_(lix[0],lix[1],Tl.inds[-1])
+        for i in [0,1]:
+            data = Tl.data[i,:,:]
+            U[tag,i],S[tag,i],V[tag,i] = np.linalg.svd(data,full_matrix=False)
+        
+    return tn
+def get_cheb_coeff(fxn,order,a=-1.,b=1.,m=None):
+    if m is None:
+        m = order + 1
+    r = [-np.cos((2.*k-1.)*np.pi/(2.*m)) for k in range(1,m+1)]
+    x = [rk*(b-a)/2.+(b+a)/2. for rk in r]
+    y = np.array([fxn(xk) for xk in x])
+    c = []
+    for i in range(order+1):
+        vec = np.array([scipy.special.eval_chebyt(i,rk) for rk in r])
+        c.append(np.dot(y,vec)/np.dot(vec,vec))
+    c = np.polynomial.chebyshev.cheb2poly(c)
+    A,B = 2./(b-a),-(b+a)/(b-a)
+    coeff = [0. for i in range(order+1)]
+    fac = [1]
+    for i in range(1,order+1):
+        fac.append(fac[-1]*i)
+    for i in range(order+1):
+        for j in range(i+1):
+            coeff[j] += c[i]*A**j*B**(i-j)*fac[i]/(fac[j]*fac[i-j])
+    return coeff
+def get_B(v0,vg,tau,xs,max_bond=None,cutoff=1e-15,equalize_norms=True):
+    norb,_,nf = vg.shape
+    ng = len(xs)
+    sqrt_tau = np.sqrt(tau)
+    tn = qtn.TensorNetwork([])
+    CP = np.zeros((norb,)*3)
+    for i in range(norb):
+        CP[i,i,i] = 1.
+
+    data = np.ones((norb,norb,2))
+    data[:,:,1] = -tau*v0
+    inds = [qtn.rand_uuid() for i in range(3)]
+    tn.add_tensor(qtn.Tensor(data=data,inds=inds,tags={'T0','v0'}))
+    xix = []
+    for g in range(nf):
+        data = np.ones((norb,norb,ng,2),dtype=vg.dtype)
+        for i in range(ng):
+            data[:,:,i,1] = sqrt_tau*xs[i]*vg[:,:,g]
+        inds = [qtn.rand_uuid() for i in range(4)]
+        xix.append(inds[2])
+        tn.add_tensor(qtn.Tensor(data=data,inds=inds,tags={f'T{g+1}',f'v{g+1}'}))
+
+    pix = [qtn.rand_uuid() for i in range(nf)]
+    for g in range(nf):
+        rix = tn[f'v{g+1}'].inds[0] if g==nf-1 else pix[g+1]
+        inds = pix[g],rix,tn[f'v{g}'].inds[0]
+        tn.add_tensor(qtn.Tensor(data=CP,inds=inds,tags={f'T{g}',f'p{g}'}))
+    qix = [qtn.rand_uuid() for i in range(nf)]
+    for g in range(nf):
+        rix = tn[f'v{g+1}'].inds[1] if g==nf-1 else qix[g+1]
+        inds = qix[g],rix,tn[f'v{g}'].inds[1]
+        tn.add_tensor(qtn.Tensor(data=CP,inds=inds,tags={f'T{g}',f'q{g}'}))
+    iix = [qtn.rand_uuid() for i in range(nf)]
+    for g in range(nf):
+        rix = tn[f'v{g+1}'].inds[-1] if g==nf-1 else iix[g+1]
+        inds = rix,tn[f'v{g}'].inds[-1],iix[g]
+        tn.add_tensor(qtn.Tensor(data=ADD,inds=inds,tags={f'T{g}',f'a{g}'}))
+    print(tn)
+
+    for g in range(nf):
+        tn.contract_tags(f'T{g}',which='any',inplace=True)
+    tn.fuse_multibonds_()
+    print(tn)
+
+#    # canonize from right
+#    for g in range(nf,0,-1):
+#        tn.canonize_between(f'T{g-1}',f'T{g}',absorb='left')
+#    # compress from right
+#    for g in range(nf):
+#        tn.compress_between(f'T{g}',f'T{g+1}',absorb='right',
+#                            max_bond=max_bond,cutoff=cutoff)
+#    # canonize from left
+#    for g in range(nf):
+#        tn.canonize_between(f'T{g}',f'T{g+1}',absorb='right')
+#    # compress from right
+#    for g in range(nf,0,-1):
+#        tn.compress_between(f'T{g-1}',f'T{g}',absorb='left',
+#                            max_bond=max_bond,cutoff=cutoff)
+    return tn,pix[0],qix[0],iix[0],xix 
+if __name__=='__main__':
+    norb = 3
+    t = 1.
+    u = 1.
+
+    h1 = np.zeros((norb,)*2)
+    for i in range(norb):
+        if i-1>0:
+            h1[i,i-1] = -t
+        if i+1<norb:
 def get_mps(args,tr,data_map):
     i,fname = args
     N,g = tr.shape

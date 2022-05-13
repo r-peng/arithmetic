@@ -467,7 +467,6 @@ def contract_rec(tn,c1,c2,**compress_opts):
     for j in range(L):
         old,new = 'I{}_'.format(j),'I{}'.format(j)
         tn[tag2,old].retag_({old:new}) 
-    # make KET
     # group nodes
     info1 = tag2,tag1,'COL{}','ROW{}'
     info2 = tag1,tag2,'ROW{}','COL{}'
@@ -498,7 +497,7 @@ def contract_rec(tn,c1,c2,**compress_opts):
         for j in range(Ly):
             tags = 'ROW{}'.format(i),'COL{}'.format(j)
             tn.contract_tags(tags,which='all',inplace=True)
-            tn[tags].modify(tags=tags+('I{},{}'.format(i,j),'KET'))
+            tn[tags].modify(tags=tags+('I{},{}'.format(i,j),))
     if Ly<=2:
         tags = ['I{},{}'.format(0,j) for j in range(Ly)]
         for i in range(1,Lx-1):
@@ -511,62 +510,7 @@ def contract_rec(tn,c1,c2,**compress_opts):
             tags_new = ['I{},{}'.format(i,j) for i in range(Lx)]
             tn.contract_tags(tags+tags_new,which='any',inplace=True)
         return tn,Lx,Ly
-    # add physical inds
-    # corners    
-    tl = (Lx-1,0),(0,1),(Lx-2,Ly-1)
-    br = (0,Ly-1),(Lx-1,Ly-2),(1,0)
-    for sites in [tl,br]:
-        t0 = tn['I{},{}'.format(*sites[0])]
-        t1 = tn['I{},{}'.format(*sites[1])]
-        t2 = tn['I{},{}'.format(*sites[2])]
-        b1 = tuple(t0.bonds(t1))[0]
-        b2 = tuple(t0.bonds(t2))[0]
-        t0.reindex_({b1:'k{},{}_v'.format(*sites[0])})
-        t0.reindex_({b2:'k{},{}_h'.format(*sites[0])})
-        t1.reindex_({b1:'k{},{}'.format(*sites[1])})
-        t2.reindex_({b2:'k{},{}'.format(*sites[2])})
-    for site in [(0,0),(Lx-1,Ly-1)]:
-        t = tn['I{},{}'.format(*site)]
-        data = t.data.reshape(t.data.shape+(1,))
-        inds = t.inds+('k{},{}'.format(*site),)
-        t.modify(data=data,inds=inds)
-    # boundaries
-    info1 = Ly,Lx-1,False
-    info2 = Lx,Ly-1,True
-    for info in [info1,info2]:
-        L,idx,reverse = info
-        for j in range(1,L-2):
-            site1,site2 = [idx,j],[0,j+1]
-            if reverse:
-                site1.reverse()
-                site2.reverse() 
-            t1 = tn['I{},{}'.format(*site1)]
-            t2 = tn['I{},{}'.format(*site2)]
-            bnd = tuple(t1.bonds(t2))[0]
-            t1.reindex_({bnd:'k{},{}'.format(*site1)})
-            t2.reindex_({bnd:'k{},{}'.format(*site2)})
-    # bulk
-    for i in range(1,Lx-1):
-        for j in range(1,Ly-1):
-            t = tn['I{},{}'.format(i,j)]
-            data = t.data.reshape(t.data.shape+(1,))
-            inds = t.inds+('k{},{}'.format(i,j),)
-            t.modify(data=data,inds=inds)
-    # make BRA
-    # get 2-pix sites
-    for site,steps in zip([(Lx-1,0),(0,Ly-1)],[(-1,1),(1,-1)]):
-        t = tn['KET','I{},{}'.format(*site)]
-        pixs = ['k{},{}_'.format(*site)+b for b in ['v','h']]
-        nbs = [(site[0]+steps[0],site[1]),(site[0],site[1]+steps[1])]
-        for pix,nb in zip(pixs,nbs):
-            dim = t.shape[t.inds.index(pix)]
-            data = np.eye(dim)
-            bnd = nb+site
-            inds = pix,'I{},{}_I{},{}'.format(*bnd)
-            tags = 'ROW{}'.format(site[0]),'COL{}'.format(site[1]),\
-                   'I{},{}'.format(*site),'BRA'
-            tn.add_tensor(qtn.Tensor(data=data,inds=inds,tags=tags))
-    # other sites
+    # diagonal bnds
     info1 = Lx,Ly,False
     info2 = Ly,Lx,True
     for info in [info1,info2]:
@@ -577,86 +521,40 @@ def contract_rec(tn,c1,c2,**compress_opts):
                 range1,range2,step1,step2 = range(1,cut+1),range(L2),-1,1
             else: 
                 range1,range2,step1,step2 = range(cut,L1-1),range(L2-1,-1,-1),1,-1
-            for i in range1: 
-                site = [i,range2[0]]
+            for i in range1:
+                site_in = [i,range2[0]]
+                site_out = [i+step1,range2[-1]]
                 site_next = [i+step1,range2[0]]
                 if reverse:
-                    site.reverse()
+                    site_in.reverse()
+                    site_out.reverse()
                     site_next.reverse()
-                t = tn['KET','I{},{}'.format(*site)]
-                dim = t.shape[t.inds.index('k{},{}'.format(*site))]
-
+                t_in = tn['I{},{}'.format(*site_in)]
+                t_out = tn['I{},{}'.format(*site_out)]
+                dim = t_in.shared_bond_size(t_out)
                 data = np.eye(dim)
-                bnd = site+site_next
-                inds = 'k{},{}'.format(*site),'I{},{}_I{},{}'.format(*bnd)
-                tags = 'ROW{}'.format(site[0]),'COL{}'.format(site[1]),\
-                       'I{},{}'.format(*site),'BRA'
-                tn.add_tensor(qtn.Tensor(data=data,inds=inds,tags=tags))
-                for j in range2:
+                bnd = tuple(t_in.bonds(t_out))[0]
+                for j in range2[:-1]:
                     site = [i+step1,j]
+                    site_next = [i+step1,j+step2]
                     site_prev = [i,range2[0]] if j==range2[0] else [i+step1,j-step2]
-                    site_next = [None,None] if j==range2[-1] else [i+step1,j+step2]
                     if reverse:
                         site.reverse()
                         site_prev.reverse()
                         site_next.reverse()
-                    if site not in [[Lx-1,0],[0,Ly-1]]:
-                        bnd = site_prev+site
-                        idx_prev = 'I{},{}_I{},{}'.format(*bnd)
-                        if j==range2[-1]:
-                            idx_next = 'k{},{}'.format(*site)
-                        else:
-                            bnd = site+site_next
-                            idx_next = 'I{},{}_I{},{}'.format(*bnd)
-                        inds = idx_prev,idx_next 
-                        tags = 'ROW{}'.format(site[0]),'COL{}'.format(site[1]),\
-                               'I{},{}'.format(*site),'BRA'
-                        tn.add_tensor(qtn.Tensor(data=data,inds=inds,tags=tags))
-    for i in range(Lx):
-        for j in range(Ly):
-            tags = 'BRA','I{},{}'.format(i,j)
-            ntsr = len(tn.select_tensors(tags,which='all'))
-            if ntsr>0:
-                tn.contract_tags(tags,which='all',inplace=True)
-            else:
-                data = np.array([1.0])
-                inds = ['k{},{}'.format(i,j)]
-                tags_ = 'ROW{}'.format(i),'COL{}'.format(j)
-                tn.add_tensor(qtn.Tensor(data=data,inds=inds,tags=tags+tags_))  
-    tn.fuse_multibonds_()
-    for site,steps in zip([(Lx-1,0),(0,Ly-1)],[(-1,1),(1,-1)]):
-        t = tn['I{},{}'.format(*site),'BRA']
-        nbs = [(site[0]+steps[0],site[1]),(site[0],site[1]+steps[1])]
-        nbs = [tn['I{},{}'.format(*nb)] for nb in nbs]
-        bnds = [tuple(t.bonds(nb))[0] for nb in nbs]
-        pix = tuple(set(t.inds).difference(set(bnds)))[0]
-        t.reindex_({pix:'k{},{}'.format(*site)})
-        tn['I{},{}'.format(*site),'KET'].reindex_({pix:'k{},{}'.format(*site)})
-    for i in range(Lx):
-        for j in range(Ly):
-            t = tn['I{},{}'.format(i,j),'BRA']
-            if 'k{},{}'.format(i,j) not in t.inds:
-                data = t.data.reshape(t.data.shape+(1,))
-                inds = t.inds+('k{},{}'.format(i,j),)
-                t.modify(data=data,inds=inds) 
-            # l,r,u,d neighbors
-            nbs = [(i,j-1),(i,j+1),(i-1,j),(i+1,j)]
-            if i==0:
-                nbs.remove((i-1,j))
-            if i==Lx-1:
-                nbs.remove((i+1,j))
-            if j==0:
-                nbs.remove((i,j-1))
-            if j==Ly-1:
-                nbs.remove((i,j+1))
-            nbs = [tn['I{},{}'.format(*nb),'BRA'] for nb in nbs]
-            for nb in nbs:
-                if len(t.bonds(nb))==0:
-                    bnd = qtn.rand_uuid()
-                    for t_ in [t,nb]:
-                        data = t_.data.reshape(t_.data.shape+(1,)) 
-                        inds = t_.inds+(bnd,)
-                        t_.modify(data=data,inds=inds)
+                    if j==range2[0]:
+                        idx_prev = bnd
+                    else:
+                        idx_prev = site_prev+site
+                        idx_prev = 'I{},{}_I{},{}'.format(*idx_prev)
+                    idx_next = site+site_next
+                    idx_next = 'I{},{}_I{},{}'.format(*idx_next)
+                    inds = idx_prev,idx_next 
+                    tags = 'I{},{}'.format(*site)
+                    tn.add_tensor(qtn.Tensor(data=data,inds=inds,tags=tags))
+                    tn.contract_tags(tags,which='all',inplace=True)
+                t_out.reindex_({bnd:idx_next})
+    tn.compress_all_(canonize_distance=1,**compress_opts)
     tn.view_as_(qtn.TensorNetwork2D,
                 site_tag_id='I{},{}',row_tag_id='ROW{}',col_tag_id='COL{}',
                 Lx=Lx,Ly=Ly)
