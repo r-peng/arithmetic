@@ -1,4 +1,58 @@
 
+def get_backbone_mps(T,n,tag,**compress_opts):
+    norb = T.shape[T.inds.index('p')]
+    oix = tuple(set(T.inds).difference({'p','q','k'}))[0]
+    Ttag = tuple(T.tags)
+
+    sCP2 = np.zeros((2,)*3)
+    sCP2[0,0,0] = 1./norb
+    sCP2[1,1,1] = 1.
+
+    tn = qtn.TensorNetwork([])
+    for i in range(n):
+        pnew = 'p' if i==n-1 else f'{tag}{i},{i+1}'
+        qnew = 'q' if i==0 else f'{tag}{i-1},{i}'
+        Ti = T.reindex({'p':pnew,'q':qnew,'k':f'i{i}',oix:f'{oix}_{tag}{i}'})
+        Ti.add_tag(f'{tag}{i}')
+        tn.add_tensor(Ti)
+    for i in range(1,n):
+        lix = 'i0' if i==1 else f'i{i-1},{i}_'
+        rix = 'k' if i==n-1 else f'i{i},{i+1}_'
+        tn.add_tensor(qtn.Tensor(data=sCP2,inds=(lix,f'i{i}',rix),
+                                 tags={'a',f'{tag}{i}'}))
+    ix_map = {0:'q',n-1:'p'}
+    ls = []
+    # move q-leg
+    for i in ix_map:
+        Ti = tn[Ttag+(f'{tag}{i}',)]
+        Tl,Tr = Ti.split(left_inds=None,right_inds=(f'i{i}',ix_map[i]),
+                         absorb='right',**compress_opts)
+        Ti.modify(data=Tl.data,inds=Tl.inds)
+
+        ix_map[i] = Tr.inds[0]
+        ls.append(Tr)
+    for i in range(1,nstep-1):
+        Ti = tn['a',f'{tag}{i}']
+        blob = qtn.tensor_contract(ls[0],Ti)
+        Tl,ls[0] = blob.split(left_inds=None,right_inds=('q',f'i{i},{i+1}_'),
+                              absorb='right',bond_ind=f'i{i},{i+1}',**compress_opts)
+        Ti.modify(data=Tl.data,inds=Tl.inds)
+    Ti = tn_['a',f'{tag}{n-1}']
+    blob = qtn.tensor_contract(*ls,Ti)
+    Ti.modify(data=blob.data,inds=blob.inds)
+    # compress involved tensors
+    T = tn_[Ttag+(f'{tag}{n-1}',)]
+    T.retag_({f'{tag}{n-1}':f'{tag}{n}'})
+    tn_ = compress(tn_,tag,**compress_opts)
+    T.retag_({f'{tag}{n}':f'{tag}{n-1}'})
+    # seperate p,q,k
+    Tl,Tr = Ti.split(left_inds=None,right_inds=('p','q','k'),
+                     absorb='right',**compress_opts)
+    Ti.modify(data=Tl.data,inds=Tl.inds)
+    Tr.modify(tags={})
+    tn.add_tensor(Tr)
+    tn.reindex_({bix:f'i{i}' for i,bix in ix_map.items()})
+    return tn
 def get_cheb_coeff(fxn,order):
     N = order + 1
     c = []
