@@ -1,4 +1,27 @@
 
+    def get_G1_backbone(self,**compress_opts):
+        tn = self.inverse_backbone.copy()
+        tid = tuple(tn.ind_map['k'])[0]
+        T1 = tn.tensor_map[tid]
+        dim = T1.shape[T1.inds.index('p')]
+
+        sCP2 = np.zeros((2,)*3)
+        sCP2[0,0,0] = 1./dim
+        sCP2[1,1,1] = 1.
+
+        n1 = self.inverse_backbone.num_tensors-1
+        n2 = self.Bn_backbone.num_tensors-1
+
+        T1.reindex_({'p':'_','k':'i1'})
+        T2 = self.Tdet.reindex({f's{n2-1},{n2}':f'o{n1}','q':'_','k':'i2'})
+        blob = qtn.tensor_contract(T1,T2,qtn.Tensor(data=sCP2,inds=('i1','i2','k')))
+        L,R = blob.split(left_inds=None,right_inds=('p','q','k'),absorb='both',
+                         bond_ind=f'o{n1},{n1+1}',**compress_opts)
+        T1.modify(data=L.data,inds=L.inds,tags=f'o{n1}') 
+        R.modify(tags={})
+        tn.add_tensor(R)
+        self.G1_backbone = tn 
+        return tn
 def get_backbone_mps(T,n,tag,**compress_opts):
     norb = T.shape[T.inds.index('p')]
     oix = tuple(set(T.inds).difference({'p','q','k'}))[0]
