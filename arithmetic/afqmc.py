@@ -24,6 +24,13 @@ def get_Hmc(h1,eri,method='eigh'):
     L = L.reshape((norb,norb,L.shape[-1]))
     vg = 1j*L
     return v0,vg
+def scale(tn):
+    for tid in tn.tensor_map:
+        T = tn.tensor_map[tid]
+        fac = np.amax(np.absolute(T.data))
+        T.modify(data=T.data/fac)
+        tn.exponent += np.log10(fac)
+    return tn
 def compress1D(tn,tag,maxiter=10,final='left',**compress_opts):
     L = tn.num_tensors
     max_bond = tn.max_bond()
@@ -173,6 +180,7 @@ def get_exponential(tni,order=3,**compress_opts):
     tn = scalar_multiply(tn,coeff[0])
     tn = add(tn,coeff[1])
     for i in range(2,len(coeff)):
+        tn.exponent += tni.exponent
         T1 = tn['x0']
         T2 = tni['x0'].copy()
         T1.reindex_({'p':'_','k':'i1'})
@@ -191,8 +199,10 @@ def get_exponential(tni,order=3,**compress_opts):
         tn.fuse_multibonds_()
         tn = compress1D(tn,'x',final='right',**compress_opts)
         tn = add(tn,coeff[i])
+        tn = scale(tn)
     return tn
-def get_backbone(T,n,tag,coeff=None,**compress_opts):
+def get_backbone(T,coeff,tag,**compress_opts):
+    n = len(coeff)
     dim = T.shape[T.inds.index('p')]
     oix = tuple(set(T.inds).difference({'p','q','k'}))[0]
 
@@ -202,19 +212,20 @@ def get_backbone(T,n,tag,coeff=None,**compress_opts):
 
     tn = qtn.TensorNetwork([])
     T1 = T.copy()
-    if coeff is not None:
-        T1 = add(T1,coeff[0])
+    T1 = add(T1,coeff[0])
     for i in range(1,n):
         T1.reindex_({'p':'_','k':'i1'})
         T2 = T.reindex({'q':'_','k':'i2',oix:f'{tag}{i}'})
         T2.modify(tags={})
         blob = qtn.tensor_contract(T1,T2,qtn.Tensor(data=sCP2,inds=('i1','i2','k')))
-        T1,T2 = blob.split(left_inds=('p','q','k'),absorb='left',
+        T1,S,T2 = blob.split(left_inds=('p','q','k'),absorb=None,
                           bond_ind=f'{tag}{i},{i+1}',**compress_opts)
+        fac = np.amax(S.data)
+        T1.modify(data=np.einsum('...s,s->...s',T1.data,S.data/fac))
+        tn.exponent += np.log10(fac)
         T2.modify(tags=f'{tag}{i}')
         tn.add_tensor(T2)
-        if coeff is not None:
-            T1 = add(T1,coeff[i])
+        T1 = add(T1,coeff[i])
 
     tn[f'{tag}1'].reindex_({oix:f'{tag}0'})
     t0,t1 = tn[f'{tag}1'].split((f'{tag}0',),absorb='both',bond_ind=f'{tag}0,1',
@@ -231,73 +242,75 @@ def get_backbone(T,n,tag,coeff=None,**compress_opts):
 ###########################################################################
 # compression strategy 1
 ###########################################################################
-def trace_field(tni,order,tr,**compress_opts):
+def trace_field(tni,nl,tr,**compress_opts):
     nf = tni.num_tensors-1
+    fac = 10**(tni.exponent/nf)
     ng = tni['x1'].shape[tni['x1'].inds.index('x1')]
     CP = np.zeros((ng,)*3)
     for i in range(ng):
         CP[i,i,i] = 1. 
     def get_col(i):
         col = qtn.TensorNetwork([])
-        for j in range(order):
-            T = tni[f'x{i}'].reindex({f'x{i-1},{i}':f'x{i-1},{i}_o{j}',
-                                      f'x{i},{i+1}':f'x{i},{i+1}_o{j}'})
+        for j in range(nl):
+            T = tni[f'x{i}'].reindex({f'x{i-1},{i}':f'x{i-1},{i}_l{j}',
+                                      f'x{i},{i+1}':f'x{i},{i+1}_l{j}'})
             if j==0:
-                T.reindex_({f'x{i}':f'x{i}_o0,1'})
+                T.reindex_({f'x{i}':f'x{i}_l0,1'})
             else:
                 t = qtn.Tensor(data=CP,
-                               inds=(f'x{i}',f'x{i}_o{j-1},{j}',f'x{i}_o{j},{j+1}'))
+                               inds=(f'x{i}',f'x{i}_l{j-1},{j}',f'x{i}_l{j},{j+1}'))
                 T = qtn.tensor_contract(T,t)
-            if j==order-1:
-                t = qtn.Tensor(data=tr[i],inds=(f'x{i}_o{j},{j+1}',))
+            if j==nl-1:
+                t = qtn.Tensor(data=tr[i],inds=(f'x{i}_l{j},{j+1}',))
                 T = qtn.tensor_contract(T,t)
-            T.modify(tags=f'o{j}')
+            T.modify(data=T.data*fac,tags=f'l{j}')
             col.add_tensor(T)
         return col
     tn = get_col(nf)
     for i in range(nf-1,0,-1):
         tn.add_tensor_network(get_col(i))
-        for j in range(order):
-            tn.contract_tags(f'o{j}',which='any',inplace=True)
+        for j in range(nl):
+            tn.contract_tags(f'l{j}',which='any',inplace=True)
         tn.fuse_multibonds_()
         try:
-            tn = compress1D(tn,'o',**compress_opts)
+            tn = compress1D(tn,'l',**compress_opts)
         except ValueError:
             tn = tn
-    for i in range(order):
-        tn[f'o{i}'].reindex_({f'x{nf}_o{i-1},{i}':f'o{i-1},{i}',
-                              f'x{nf}_o{i},{i+1}':f'o{i},{i+1}',
-                              f'x0,1_o{i}':f'o{i}'})
+    for i in range(nl):
+        tn[f'l{i}'].reindex_({f'x{nf}_l{i-1},{i}':f'l{i-1},{i}',
+                              f'x{nf}_l{i},{i+1}':f'l{i},{i+1}',
+                              f'x0,1_l{i}':f'l{i}'})
     return tn
-def compress_step(tnsi,tnxi,**compress_opts):
-    order = tnxi.num_tensors
+def compress_step(tnxi,tnsi,**compress_opts):
+    nl = tnxi.num_tensors
     ns = tnsi.num_tensors-1
+    fac = 10**(tnsi.exponent/ns)
     def get_col(i):
         col = qtn.TensorNetwork([])
-        for j in range(order):
-            T = tnsi[f's{i}'].reindex({f's{i},{i+1}':f's{i},{i+1}_o{j}',
-                                       f's{i-1},{i}':f's{i-1},{i}_o{j}',
-                                       f's{i}':f'o{j}'})
-            t = tnxi[f'o{j}'].reindex({f'o{j-1},{j}':f's{i}_o{j-1},{j}',
-                                       f'o{j},{j+1}':f's{i}_o{j},{j+1}'})
+        for j in range(nl):
+            T = tnsi[f's{i}'].reindex({f's{i},{i+1}':f's{i},{i+1}_l{j}',
+                                       f's{i-1},{i}':f's{i-1},{i}_l{j}',
+                                       f's{i}':f'l{j}'})
+            t = tnxi[f'l{j}'].reindex({f'l{j-1},{j}':f's{i}_l{j-1},{j}',
+                                       f'l{j},{j+1}':f's{i}_l{j},{j+1}'})
             T = qtn.tensor_contract(T,t)
-            T.modify(tags=f'o{j}')
+            T.modify(data=T.data*fac,tags=f'l{j}')
             col.add_tensor(T)
         return col
     tn = get_col(0)
     for i in range(1,ns):
         tn.add_tensor_network(get_col(i))
-        for j in range(order):
-            tn.contract_tags(f'o{j}',which='any',inplace=True)
+        for j in range(nl):
+            tn.contract_tags(f'l{j}',which='any',inplace=True)
         tn.fuse_multibonds_()
         try:
-            tn = compress1D(tn,'o',**compress_opts)
+            tn = compress1D(tn,'l',**compress_opts)
         except ValueError:
             tn = tn
-    for i in range(order):
-        tn[f'o{i}'].reindex_({f's0_o{i-1},{i}':f'o{i-1},{i}_',
-                              f's0_o{i},{i+1}':f'o{i},{i+1}_',
-                              f's{ns-1},{ns}_o{i}':f'o{i}'})
+    for i in range(nl):
+        tn[f'l{i}'].reindex_({f's0_l{i-1},{i}':f'l{i-1},{i}',
+                              f's0_l{i},{i+1}':f'l{i},{i+1}',
+                              f's{ns-1},{ns}_l{i}':f'l{i}'})
     return tn
 ###########################################################################
 # compression strategy 2
@@ -363,11 +376,6 @@ class Propagator:
         self.B = get_exponential(tn,**compress_opts)
         self.Bn_backbone = None
         self.inverse_backbone = None
-    def init_nstep_backbone(self,nstep,**compress_opts):
-        tn = self.B
-        T = tn.tensor_map[tuple(tn.ind_map['k'])[0]].copy()
-        self.Bn_backbone = get_backbone(T,nstep,'s',**compress_opts)
-        return self.Bn_backbone
     def apply_propagator(self,mo_coeff,full=True):
         # mo_coeff=norb*nocc
         tn = self.Bn_backbone if full else self.B
@@ -377,62 +385,37 @@ class Propagator:
         self.Tprop.modify(tags={})
         self.Tdet  = matrix_multiply(self.Tprop.copy(),mo_coeff,  back=True)
         self.Tovlp = matrix_multiply(self.Tdet.copy(), mo_coeff.T,back=False)
+    def init_nstep_backbone(self,nstep,**compress_opts):
+        tn = self.B
+        T = tn.tensor_map[tuple(tn.ind_map['k'])[0]].copy()
+        coeff = [0. for i in range(nstep)]
+        self.Bn_backbone = get_backbone(T,coeff,'s',**compress_opts)
+        return self.Bn_backbone
     def init_inverse_backbone(self,order=3,**compress_opts):
         T = self.Tovlp.copy()
         T = scalar_multiply(T,-1.)
         T = add(T,1.)
         coeff = [1. for i in range(order)]
-        self.inverse_backbone = get_backbone(T,order,'o',coeff=coeff,**compress_opts)
+        self.inverse_backbone = get_backbone(T,coeff,'o',**compress_opts)
         return self.inverse_backbone
-    def compute_inverse(self,tr,**compress_opts):
-        #tnx,tns = compress_nlayer(self.B,self.Bn_backbone,self.inverse_backbone,
-        #                          **compress_opts)  
-        order = self.inverse_backbone.num_tensors-1
-        tnxi = trace_field(self.B,order,tr,**compress_opts)
-        tns = compress_step(self.Bn_backbone,tnxi,**compress_opts)
-        tns.add_tensor_network(self.inverse_backbone)
-        for i in range(order-1):
-            tns.contract_tags((f'o{i}',f'o{i+1}'),which='any',inplace=True)
-        out = tns.contract()
-        out.transpose_('p','q','k')
-        return out.data
-    def compute_rdm1(self,tr,**compress_opts):
-        #tnx,tns = compress_nlayer(self.B,self.Bn_backbone,self.inverse_backbone,
-        #                          **compress_opts)  
-        order = self.inverse_backbone.num_tensors
-        tnxi = trace_field(self.B,order,tr,**compress_opts)
-        print(tnxi)
-        tns = compress_step(self.Bn_backbone,tnxi,**compress_opts)
-        print(tns)
-        tns.add_tensor_network(self.inverse_backbone)
-        T = tns.tensor_map[tuple(tns.ind_map['k'])[0]]
-        T.reindex_({'p':'_','k':'i2'})
-
-        ns = self.Bn_backbone.num_tensors-1
-        T = self.Tdet.reindex({'q':'_','k':'i1',f's{ns-1},{ns}':f'o{order-1}'})
-        tns.add_tensor(T)
-
-        dim = T.shape[T.inds.index('_')]
-        sCP2 = np.zeros((2,)*3)
-        sCP2[0,0,0] = 1./dim
-        sCP2[1,1,1] = 1.
-        tns.add_tensor(qtn.Tensor(data=sCP2,inds=('i1','i2','k')))        
-        for i in range(order-1):
-            tns.contract_tags((f'o{i}',f'o{i+1}'),which='any',inplace=True)
-        out = tns.contract()
-        out = matrix_multiply(out,self.mo_coeff.T,back=True)
-        out.transpose_('p','q','k')
-        return out.data
-    def get_nstep_tn_from_backbone(self,typ):
-        nf = self.B.num_tensors-1
+    def trace_field(self,tr):
+        tn = self.B.copy()
+        nf = tn.num_tensors-1
+        fac = 10**(tn.exponent/nf)
+        for i in range(1,nf+1):
+            tn.add_tensor(qtn.Tensor(data=tr[i]*fac,inds=(f'x{i}',),tags=f'x{i}'))
+            tn.contract_tags(f'x{i}',which='any',inplace=True)
+        for i in range(nf,1,-1):
+            tn.contract_tags((f'x{i}',f'x{i-1}'),which='any',inplace=True)
+        return tn
+    def trace_nstep_tn(self,tr,typ):
         nstep = self.Bn_backbone.num_tensors-1
 
-        tni = self.B.copy() 
-        T = tni._pop_tensor(tuple(tni.ind_map['k'])[0])
-        oix = tuple(set(T.inds).difference({'p','q','k'}))[0]
+        tni = self.trace_field(tr) 
 
         tn = self.Bn_backbone.copy()
-        T = tn._pop_tensor(tuple(tn.ind_map['k'])[0])
+        fac = 10**(tn.exponent/nstep)
+        tn._pop_tensor(tuple(tn.ind_map['k'])[0])
         if typ=='prop':
             tn.add_tensor(self.Tprop)
         elif typ=='det':
@@ -442,13 +425,57 @@ class Propagator:
         else:
             raise NotImplementedError(f'{typ} tn not implemented!')
         for i in range(nstep):
-            tni_ = tni.copy()
-            tni_.add_tag(f's{i}')
-            tni_.reindex_({f'x{j}':f's{i},x{j}' for j in range(1,nf+1)})
-            tni_['x1'].reindex_({oix:f's{i}'})
-            tn.add_tensor_network(tni_,check_collisions=True)
-        return tn
+            ti = tni['x1'].reindex({f'x0,1':f's{i}'})
+            ti.modify(data=ti.data*fac,tags=f's{i}')
+            tn.add_tensor(ti)
+            tn.contract_tags(f's{i}',which='any',inplace=True)
+        for i in range(nstep-1):
+            tn.contract_tags((f's{i}',f's{i+1}'),which='any',inplace=True)
+        return tn.contract(output_inds=('p','q','k')).data
+    def compute_inverse(self,tr,**compress_opts):
+        #tnx,tns = compress_nlayer(self.B,self.Bn_backbone,self.inverse_backbone,
+        #                          **compress_opts)  
+        nl = self.inverse_backbone.num_tensors-1
+        tnxi = trace_field(self.B,nl,tr,**compress_opts)
+        tn = compress_step(tnxi,self.Bn_backbone,**compress_opts)
+        fac = 10**(self.inverse_backbone.exponent/nl)
+        tn.add_tensor_network(self.inverse_backbone)
+        for i in range(nl):
+            tn[f'o{i}'].reindex_({f'o{i}':f'l{i}'})
+            tn[f'o{i}'].modify(data=tn[f'o{i}'].data*fac)
+            tn.contract_tags((f'l{i}',f'o{i}'),which='any',inplace=True)
+        for i in range(nl-1):
+            tn.contract_tags((f'l{i}',f'l{i+1}'),which='any',inplace=True)
+        return tn.contract(output_inds=('p','q','k')).data
+    def compute_rdm1(self,tr,**compress_opts):
+        #tnx,tns = compress_nlayer(self.B,self.Bn_backbone,self.inverse_backbone,
+        #                          **compress_opts)  
+        nl = self.inverse_backbone.num_tensors
+        tnxi = trace_field(self.B,nl,tr,**compress_opts)
+        tn = compress_step(tnxi,self.Bn_backbone,**compress_opts)
+        fac = 10**(self.inverse_backbone.exponent/(nl-1))
+        for i in range(nl-1):
+            ti = self.inverse_backbone[f'o{i}'].reindex({f'o{i}':f'l{i}'})
+            ti.modify(data=ti.data*fac)
+            tn.add_tensor(ti)
+            tn.contract_tags((f'l{i}',f'o{i}'),which='any',inplace=True)
+        for i in range(nl-2):
+            tn.contract_tags((f'l{i}',f'l{i+1}'),which='any',inplace=True)
 
+        ns = self.Bn_backbone.num_tensors-1       
+        T1 = self.Tdet.reindex({'q':'_','k':'i1',f's{ns-1},{ns}':f'l{nl-1}'})
+        tn.add_tensor(T1)
+        T2 = self.inverse_backbone.tensor_map[tuple(self.inverse_backbone.ind_map['k'])[0]].copy()
+        T2 = matrix_multiply(T2,self.mo_coeff.T,back=True) 
+        T2.reindex_({'p':'_','k':'i2'})
+        tn.add_tensor(T2)
+
+        dim = T2.shape[T2.inds.index('_')]
+        sCP2 = np.zeros((2,)*3)
+        sCP2[0,0,0] = 1./dim
+        sCP2[1,1,1] = 1.
+        tn.add_tensor(qtn.Tensor(data=sCP2,inds=('i1','i2','k')))        
+        return tn.contract(output_inds=('p','q','k')).data
 
 if __name__=='__main__':
     norb = 5
@@ -469,6 +496,9 @@ if __name__=='__main__':
     ng = 4
     xs = np.random.rand(ng)
     idxs = {i:np.random.randint(low=0,high=ng) for i in range(1,nf+1)}
+    tr = {i:np.zeros(ng) for i in range(1,nf+1)}
+    for i in range(1,nf+1):
+        tr[i][idxs[i]] = 1.
 
     tau = 0.001
     nocc = 3
@@ -476,24 +506,13 @@ if __name__=='__main__':
     mo_coeff = np.eye(norb)[:,:nocc]
 
     cutoff = 1e-15
-    nstep = 10
+    nstep = 100
     coeff = [1./scipy.math.factorial(i) for i in range(3,-1,-1)]
 
     cls = Propagator(v0,vg,xs,tau,cutoff=cutoff)
-    Bn = cls.init_nstep_backbone(nstep,cutoff=cutoff)
-    print('B')
-    print(cls.B)
-    print('Bn_backbone')
-    print(Bn)
-    cls.apply_propagator(mo_coeff)
-    det = cls.get_nstep_tn_from_backbone('det')
-    for i in range(1,nf+1):
-        vec = np.zeros(ng)
-        vec[idxs[i]] = 1.
-        for j in range(nstep):
-            det.add_tensor(qtn.Tensor(data=vec,inds=(f's{j},x{i}',)))
-    det = det.contract(output_inds=('p','q','k')).data
-
+    print(f'max_bond(B)={cls.B.max_bond()},exponent={cls.B.exponent}')
+    tn = cls.trace_field(tr)
+    out = tn.contract(output_inds=('p','q','k')).data 
     A_ = np.array(-tau*v0,dtype=vg.dtype)
     for i in range(1,nf+1):
         A_ += np.sqrt(tau)*xs[idxs[i]]*vg[:,:,i-1]
@@ -501,17 +520,27 @@ if __name__=='__main__':
     pol = A_*coeff[0]+np.eye(norb)*coeff[1]
     for ci in coeff[2:]:
         pol = np.einsum('pr,rq->pq',A_,pol)+ci*np.eye(norb)
+    print('check B[0]=',np.linalg.norm(np.ones_like(out[:,:,0])-out[:,:,0]))
+    print('check pol[1]=',np.linalg.norm(pol-out[:,:,1]))
+    print('check exp[1]=',np.linalg.norm(exp-out[:,:,1]))
+    print()
+
+    cls.init_nstep_backbone(nstep,cutoff=cutoff)
+    print(f'max_bond(Bn)={cls.Bn_backbone.max_bond()},exponent={cls.Bn_backbone.exponent}')
+    cls.apply_propagator(mo_coeff)
+    out = cls.trace_nstep_tn(tr,'det')
+
     expn = np.eye(norb)
     poln = np.eye(norb)
     for i in range(nstep):
         expn = np.dot(exp,expn)
         poln = np.dot(pol,poln)
-    print('check Bn[0]=',np.linalg.norm(np.ones(det.shape[:2])-det[:,:,0]))
-    print('check poln[1]=',np.linalg.norm(np.dot(poln,mo_coeff)-det[:,:,1]))
-    print('check expn[1]=',np.linalg.norm(np.dot(expn,mo_coeff)-det[:,:,1]))
+    print('check Bn[0]=',np.linalg.norm(np.ones_like(out[:,:,0])-out[:,:,0]))
+    print('check poln[1]=',np.linalg.norm(np.dot(poln,mo_coeff)-out[:,:,1]))
+    print('check expn[1]=',np.linalg.norm(np.dot(expn,mo_coeff)-out[:,:,1]))
     print()
     # check inverse
-    order = 3
+    order = 5
     W = np.linalg.multi_dot([mo_coeff.T,poln,mo_coeff])
     w,v = np.linalg.eig(W)
     print(w)
@@ -523,21 +552,22 @@ if __name__=='__main__':
     for j in range(2,order+1):
         Winv_ = np.dot(W_,Winv_)+np.eye(nocc)
         print(f'order={j},inv={np.linalg.norm(Winv-Winv_)}')
-    inv_back = cls.init_inverse_backbone(order=order,cutoff=cutoff)
-    print('inverse_backbone')
-    print(inv_back)
+
+    cls.init_inverse_backbone(order=order,cutoff=cutoff)
 #    tr = np.array([np.exp(-x**2/2.) for x in xs])/np.sqrt(2.*np.pi)
-    tr = {i:np.zeros(ng) for i in range(1,nf+1)}
-    for i in range(1,nf+1):
-        tr[i][idxs[i]] = 1.
-    rdm1 = cls.compute_rdm1(tr,cutoff=cutoff)
-    rdm1_ = np.linalg.multi_dot([det[:,:,1],Winv_,mo_coeff.T])
-    print('check rdm1[0]=',np.linalg.norm(np.ones(rdm1.shape[:2])-rdm1[:,:,0]))
-    print('check rdm1[1]=',np.linalg.norm(rdm1_-rdm1[:,:,1]))
+    print(f'max_bond(inv)={cls.inverse_backbone.max_bond()},exponent={cls.inverse_backbone.exponent}')
+    out = cls.compute_inverse(tr,cutoff=cutoff)
+    print('check inv[0]=',np.linalg.norm(np.ones_like(out[:,:,0])-out[:,:,0]))
+    print('check inv[1]=',np.linalg.norm(Winv_-out[:,:,1]))
+
+    out = cls.compute_rdm1(tr,cutoff=cutoff)
+    rdm1 = np.linalg.multi_dot([poln,mo_coeff,Winv_,mo_coeff.T])
+    print('check rdm1[0]=',np.linalg.norm(np.ones_like(out[:,:,0])-out[:,:,0]))
+    print('check rdm1[1]=',np.linalg.norm(rdm1-out[:,:,1]))
 
     W = np.linalg.multi_dot([mo_coeff.T,expn,mo_coeff])
     Winv = np.linalg.inv(W)
-    rdm1_ = np.linalg.multi_dot([expn,mo_coeff,Winv,mo_coeff.T])
-    print('check rdm1[1]=',np.linalg.norm(rdm1_-rdm1[:,:,1]))
-    print(rdm1_.real)
-    print(rdm1_.imag)
+    rdm1 = np.linalg.multi_dot([expn,mo_coeff,Winv,mo_coeff.T])
+    print('check rdm1[1]=',np.linalg.norm(rdm1-out[:,:,1]))
+    print(rdm1.real)
+    print(rdm1.imag)
