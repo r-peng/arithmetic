@@ -4,10 +4,10 @@ from arithmetic.gaussian import (
     get_field,
     get_exponent,
     add_exponent,
-    trace_pol,
+    trace_pol_compress_col,
 )
-N = 5
-ng = 4
+N = 20
+ng = 10
 n = 6
 xs = np.random.rand(ng)
 A = np.random.rand(N,N)
@@ -19,12 +19,12 @@ for i in range(1,N+1):
 vec = np.array([xs[idxs[i]] for i in range(N)])
 coeff = {i:np.random.rand() for i in range(n+1)}
 
-tny = get_field(xs,'y',N,cutoff=1e-15)
-tnA = get_exponent(tny,A,'y',cutoff=1e-15) 
-tnB = get_exponent(tny,B,'y',cutoff=1e-15) 
-tnAB = add_exponent(tnA,tnB,'y',cutoff=1e-15)
-out_row = trace_pol(tnAB,'y',tr,coeff,cutoff=1e-15)
-out_col = trace_pol(tnAB,'y',tr,coeff,new_tag='a',cutoff=1e-15)
+tny = get_field(xs,'y',N,iprint=2)
+tnA = get_exponent(tny,A,'y',iprint=2,cutoff=1e-10) 
+tnB = get_exponent(tny,B,'y',iprint=2,cutoff=1e-10) 
+#tnAB = add_exponent(tnA,tnB,'y',iprint=1,cutoff=1e-15)
+#out_row = trace_pol(tnAB,'y',tr,coeff,iprint=1,cutoff=1e-15)
+#out_col = trace_pol_compress_col(tnAB,'y','a',tr,coeff,iprint=2,cutoff=1e-15)
 
 for i in range(1,N+1):
     tny.add_tensor(qtn.Tensor(data=tr[i],inds=(f'y{i}',)))
@@ -46,6 +46,7 @@ out = tnB.contract()
 print('check get_exponent[0]=',abs(1.-out.data[0]))
 B = np.einsum('ijkl,i,j,k,l->',B,vec,vec,vec,vec)
 print('check get_exponent[1]=',abs(B-out.data[1])/abs(B))
+exit()
 
 for i in range(1,N+1):
     tnAB.add_tensor(qtn.Tensor(data=tr[i],inds=(f'y{i}',)))
@@ -56,5 +57,5 @@ print('check add_exponent[1]=',abs(AB-out.data[1])/abs(AB))
 
 terms = [coeff[i]*AB**i for i in range(n+1)]
 pol = sum(terms) 
-print('check trace_pol_compress_row=',abs(pol-out_row)/abs(pol))
+#print('check trace_pol_compress_row=',abs(pol-out_row)/abs(pol))
 print('check trace_pol_compress_col=',abs(pol-out_col)/abs(pol))
