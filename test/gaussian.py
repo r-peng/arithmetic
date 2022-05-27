@@ -2,11 +2,12 @@ import numpy as np
 import quimb.tensor as qtn
 from arithmetic.gaussian import (
     get_field,
-    get_exponent,
+    get_quadratic,
+    get_quartic,
     add_exponent,
     trace_pol_compress_col,
 )
-N = 20
+N = 10
 ng = 10
 n = 6
 xs = np.random.rand(ng)
@@ -20,11 +21,11 @@ vec = np.array([xs[idxs[i]] for i in range(N)])
 coeff = {i:np.random.rand() for i in range(n+1)}
 
 tny = get_field(xs,'y',N,iprint=2)
-tnA = get_exponent(tny,A,'y',iprint=2,cutoff=1e-10) 
-tnB = get_exponent(tny,B,'y',iprint=2,cutoff=1e-10) 
-#tnAB = add_exponent(tnA,tnB,'y',iprint=1,cutoff=1e-15)
+tnA = get_quadratic(tny,A,'y',iprint=2) 
+tnB = get_quartic(tny,B,'y',iprint=2) 
+tnAB = add_exponent(tnA,tnB,'y',iprint=2)
 #out_row = trace_pol(tnAB,'y',tr,coeff,iprint=1,cutoff=1e-15)
-#out_col = trace_pol_compress_col(tnAB,'y','a',tr,coeff,iprint=2,cutoff=1e-15)
+out_col = trace_pol_compress_col(tnAB,'y','a',tr,coeff,iprint=2,cutoff=1e-10)
 
 for i in range(1,N+1):
     tny.add_tensor(qtn.Tensor(data=tr[i],inds=(f'y{i}',)))
@@ -46,7 +47,6 @@ out = tnB.contract()
 print('check get_exponent[0]=',abs(1.-out.data[0]))
 B = np.einsum('ijkl,i,j,k,l->',B,vec,vec,vec,vec)
 print('check get_exponent[1]=',abs(B-out.data[1])/abs(B))
-exit()
 
 for i in range(1,N+1):
     tnAB.add_tensor(qtn.Tensor(data=tr[i],inds=(f'y{i}',)))
@@ -54,6 +54,7 @@ out = tnAB.contract()
 print('check add_exponent[0]=',abs(1.-out.data[0]))
 AB = A+B 
 print('check add_exponent[1]=',abs(AB-out.data[1])/abs(AB))
+exit()
 
 terms = [coeff[i]*AB**i for i in range(n+1)]
 pol = sum(terms) 

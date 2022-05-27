@@ -43,7 +43,56 @@ def get_field(ys,tag,nf,iprint=0,cutoff=1e-10):
     if iprint>0:
         print(tn)
     return tn
-def get_exponent(tny,A,tag,iprint=0,**compress_opts):
+def get_quadratic(tny,A,tag,iprint=0,cutoff=1e-10):
+    if iprint>0:
+        print('getting exponent...')
+    nf,n = A.shape[0],len(A.shape)
+    ng = tny[f'{tag}1'].shape[tny[f'{tag}1'].inds.index(f'{tag}1')]
+    CP = np.zeros((ng,)*3)
+    for i in range(ng):
+        CP[i,i,i] = 1.
+    sCP2 = np.zeros((2,)*3)
+    sCP2[0,0,0] = 1./nf
+    sCP2[1,1,1] = 1.
+
+    data = np.ones(A.shape+(2,))
+    data[...,1] = A
+    T1 = qtn.Tensor(data=data,inds=[f'p{i}' for i in range(n)]+['k'])
+
+    tn = qtn.TensorNetwork([])
+    for i in range(n):
+        T1.reindex_({'k':'i1'})
+        T2 = tny[f'{tag}0'].reindex({'p':f'p{i}','k':'i2',
+                                     f'{tag}0,1':f'{tag}0,1_{i}'})
+        T1 = qtn.tensor_contract(T1,T2,
+                                 qtn.Tensor(data=sCP2,inds=('i1','i2','k')))
+    tn.add_tensor(T1)
+    for j in range(1,nf+1):
+        T1 = tny[f'{tag}{j}'].reindex({f'{tag}{j}':'a',
+                                       f'{tag}{j-1},{j}':f'{tag}{j-1},{j}_0',
+                                       f'{tag}{j},{j+1}':f'{tag}{j},{j+1}_0'})
+        T2 = tny[f'{tag}{j}'].reindex({f'{tag}{j}':'b',
+                                  f'{tag}{j-1},{j}':f'{tag}{j-1},{j}_1',
+                                  f'{tag}{j},{j+1}':f'{tag}{j},{j+1}_1'})
+        T = qtn.tensor_contract(tn[f'{tag}{j-1}'],T1,T2,
+                                qtn.Tensor(data=CP,inds=('a','b',f'{tag}{j}')))
+        lix = ('k',) if j==1 else (f'{tag}{j-1}',f'{tag}{j-2},{j-1}')
+        tl,tr = T.split(lix,bond_ind=f'{tag}{j-1},{j}',absorb='right',
+                        cutoff=cutoff)
+        tn[f'{tag}{j-1}'].modify(data=tl.data,inds=tl.inds)
+        tr.modify(tags=f'{tag}{j}')
+        tn.add_tensor(tr)
+        if iprint>1:
+            print(f'bdim({tag}{j-1},{tag}{j})={tr.shape[0]}')
+
+    for j in range(nf-1,-1,-1):
+        tn.compress_between(f'{tag}{j}',f'{tag}{j+1}',absorb='left',
+                            cutoff=cutoff)
+
+    if iprint>0:
+        print(tn)
+    return tn
+def get_quartic(tny,A,tag,iprint=0,cutoff=1e-10):
     if iprint>0:
         print('getting exponent...')
     nf,n = A.shape[0],len(A.shape)
@@ -82,7 +131,7 @@ def get_exponent(tny,A,tag,iprint=0,**compress_opts):
             rix = (f'{tag}{j}',) if j==nf else \
                   (f'{tag}{j}',f'{tag}{j},{j+1}',f'{tag}{j},{j+1}_')
             tl,tr = T.split(left_inds=None,right_inds=rix,bond_ind=f'{tag}{j-1},{j}',
-                            absorb='right',**compress_opts)
+                            absorb='right',cutoff=cutoff)
             tn[f'{tag}{j-1}'].modify(data=tl.data,inds=tl.inds)
             tn[f'{tag}{j}'].modify(data=tr.data,inds=tr.inds)
             if iprint>1:
@@ -90,12 +139,12 @@ def get_exponent(tny,A,tag,iprint=0,**compress_opts):
 
         for j in range(nf-1,-1,-1):
             tn.compress_between(f'{tag}{j}',f'{tag}{j+1}',absorb='left',
-                                **compress_opts)
+                                cutoff=cutoff)
 
         if iprint>0:
             print(tn)
     return tn
-def add_exponent(tnA,tnB,tag,iprint=0,**compress_opts):
+def add_exponent(tnA,tnB,tag,iprint=0,cutoff=1e-10):
     if iprint>0:
         print('adding exponent...')
     nf = tnA.num_tensors-1
@@ -104,26 +153,30 @@ def add_exponent(tnA,tnB,tag,iprint=0,**compress_opts):
     for i in range(ng):
         CP[i,i,i] = 1.
 
-    tn = tnA.copy()
-    T1 = tn[f'{tag}0'].reindex_({'k':'i1'})
+    tn = qtn.TensorNetwork([]) 
+    T1 = tnA[f'{tag}0'].reindex({'k':'i1'})
     T2 = tnB[f'{tag}0'].reindex({'k':'i2',f'{tag}0,1':f'{tag}0,1_'})
     T = qtn.tensor_contract(T1,T2,qtn.Tensor(data=ADD,inds=('i1','i2','k')))
-    T1.modify(data=T.data,inds=T.inds)
-    for i in range(1,nf+1):
-        T1 = tn[f'{tag}{i}'].reindex_({f'{tag}{i}':'a'})
-        T2 = tnB[f'{tag}{i}'].reindex({f'{tag}{i}':'b',
-                                       f'{tag}{i-1},{i}':f'{tag}{i-1},{i}_',
-                                       f'{tag}{i},{i+1}':f'{tag}{i},{i+1}_'})
-        T = qtn.tensor_contract(T1,T2,qtn.Tensor(data=CP,inds=('a','b',f'{tag}{i}')))
-        T1.modify(data=T.data,inds=T.inds)
-    tn.fuse_multibonds_()
+    tn.add_tensor(T)
+    for j in range(1,nf+1):
+        T1 = tnA[f'{tag}{j}'].reindex({f'{tag}{j}':'a'})
+        T2 = tnB[f'{tag}{j}'].reindex({f'{tag}{j}':'b',
+                                       f'{tag}{j-1},{j}':f'{tag}{j-1},{j}_',
+                                       f'{tag}{j},{j+1}':f'{tag}{j},{j+1}_'})
+        T = qtn.tensor_contract(tn[f'{tag}{j-1}'],T1,T2,
+                                qtn.Tensor(data=CP,inds=('a','b',f'{tag}{j}')))
+        lix = ('k',) if j==1 else (f'{tag}{j-1}',f'{tag}{j-2},{j-1}')
+        tl,tr = T.split(lix,bond_ind=f'{tag}{j-1},{j}',absorb='right',
+                        cutoff=cutoff)
+        tn[f'{tag}{j-1}'].modify(data=tl.data,inds=tl.inds)
+        tr.modify(tags=f'{tag}{j}')
+        tn.add_tensor(tr)
+        if iprint>1:
+            print(f'bdim({tag}{j-1},{tag}{j})={tr.shape[0]}')
 
-    for j in range(nf):
-        tn.compress_between(f'{tag}{j}',f'{tag}{j+1}',absorb='right',
-                            **compress_opts)
     for j in range(nf-1,-1,-1):
         tn.compress_between(f'{tag}{j}',f'{tag}{j+1}',absorb='left',
-                            **compress_opts)
+                            cutoff=cutoff)
 
     if iprint>0:
         print(tn)
@@ -135,6 +188,8 @@ def trace_pol_compress_col(tnx,tag,new_tag,tr,coeff,iprint=0,**compress_opts):
     tnx.add_tensor(qtn.Tensor(data=np.array([0.,1.]),inds=('k',),tags=f'{tag}0'))
     tnx.contract_tags((f'{tag}0',f'{tag}1'),which='any',inplace=True)
     tnx[f'{tag}1'].modify(tags=f'{tag}1')
+    tnx.equalize_norms_()
+    tnx.balance_bonds_()
     nf = tnx.num_tensors
 
     out = 0.
@@ -153,8 +208,6 @@ def trace_pol_compress_col(tnx,tag,new_tag,tr,coeff,iprint=0,**compress_opts):
             fac = 10.**(exp/(i*nf))
             for j in range(1,nf+1):
                 tni[f'{tag}{j}'].modify(data=tni[f'{tag}{j}'].data*fac)
-            tni.equalize_norms_()
-            tni.balance_bonds_()
             if i==1:
                 for j in range(1,nf+1):
                     tni.add_tensor(qtn.Tensor(data=tr[j],inds=(f'{tag}{j}',),
