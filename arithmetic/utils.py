@@ -33,36 +33,38 @@ def scale(tn):
         T.modify(data=T.data/fac)
         tn.exponent += np.log10(fac)
     return tn
-def compress1D(tn,tag,maxiter=10,final='left',iprint=0,**compress_opts):
+def compress1D(tn,tag,maxiter=10,final='left',shift=0,iprint=0,**compress_opts):
     L = tn.num_tensors
     max_bond = tn.max_bond()
+    lrange = range(shift,L-1+shift)
+    rrange = range(L-1+shift,shift,-1)
     if iprint>0:
         print('init max_bond',max_bond)
     def canonize_from_left():
         if iprint>1:
             print('canonizing from left...')
-        for i in range(L-1):
+        for i in lrange:
             if iprint>2:
                 print(f'canonizing between {tag}{i},{i+1}...')
             tn.canonize_between(f'{tag}{i}',f'{tag}{i+1}',absorb='right')
     def canonize_from_right():
         if iprint>1:
             print('canonizing from right...')
-        for i in range(L-1,0,-1):
+        for i in rrange:
             if iprint>2:
                 print(f'canonizing between {tag}{i},{i-1}...')
             tn.canonize_between(f'{tag}{i-1}',f'{tag}{i}',absorb='left')
     def compress_from_left():
         if iprint>1:
             print('compressing from left...')
-        for i in range(L-1):
+        for i in lrange:
             if iprint>2:
                 print(f'compressing between {tag}{i},{i+1}...')
             tn.compress_between(f'{tag}{i}',f'{tag}{i+1}',absorb='right',**compress_opts)
     def compress_from_right():
         if iprint>1:
             print('compressing from right...')
-        for i in range(L-1,0,-1):
+        for i in rrange:
             if iprint>2:
                 print(f'compressing between {tag}{i},{i-1}...')
             tn.compress_between(f'{tag}{i-1}',f'{tag}{i}',absorb='left',**compress_opts)

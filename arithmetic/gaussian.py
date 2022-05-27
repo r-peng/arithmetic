@@ -99,45 +99,21 @@ def add_exponent(tnA,tnB,tag,iprint=0,**compress_opts):
     if iprint>0:
         print(tn)
     return tn
-def trace_pol_compress_row(tni,tag,tr,coeff,iprint=0,**compress_opts):
-    nf = tni.num_tensors-1
-    n = len(coeff) - 1
-    n1 = n // 2 # nrows from top
-    n2 = n - n1
-    coeff2,coeff1 = coeff[:n2],coeff[n2:]
-    tn1 = compress_pol_from_top(tni,tag,coeff1,tr,iprint=iprint,**compress_opts)
-    tn2 = compress_pol_from_bottom(tni,tag,coeff2,tr,iprint=iprint,**compress_opts)
-    for j in range(nf+1):
-        tn2[f'{tag}{j}'].reindex_({f'{tag}{j-1},{j}':f'{tag}{j-1},{j}_',
-                                  f'{tag}{j},{j+1}':f'{tag}{j},{j+1}_'})
-    tn1.add_tensor_network(tn2,check_collisions=False)
-    for j in range(1,nf+1):
-        out = tn1.contract_tags((f'{tag}{j-1}',f'{tag}{j}'),which='any',inplace=True)
-    return out*10.**tn1.exponent
-def compress_pol_from_top(tni,tag,coeff,tr,iprint=0,**compress_opts):
-    nf = tni.num_tensors-1
-    n = len(coeff)-1
+def compress_pol_from_top(tni,n,tag,tr,iprint=0,**compress_opts):
+    nf = tni.num_tensors
+    stop = n // 2
     ng = tni[f'{tag}1'].shape[tni[f'{tag}1'].inds.index(f'{tag}1')]
     if iprint>0:
-        print(f'{n} top rows')
+        print(f'{n-stop} top rows')
 
     CP = np.zeros((ng,)*3)
     for i in range(ng):
         CP[i,i,i] = 1.
 
     tn = tni.copy()
-    T1 = tn[f'{tag}0'].reindex_({'k':'_'})
-    data = np.einsum('i,j,ijk->ik',np.array([1.,coeff[n]]),np.array([1.,coeff[n-1]]),ADD)
-    T = qtn.tensor_contract(T1,qtn.Tensor(data=data,inds=('_','k')))
-    T1.modify(data=T.data,inds=T.inds)
-    for i in range(n-2,-1,-1):
+    for i in range(n-1,stop,-1):
         if iprint>0:
             print(f'compressing row {i+1},{i}...')
-        T1 = tn[f'{tag}0'].reindex_({'k':'i1'})
-        T2 = tni[f'{tag}0'].reindex({'k':'i2',f'{tag}0,1':f'{tag}0,1_'})
-        data = np.einsum('ijk,klm,l->ijm',CP2,ADD,np.array([1.,coeff[i]]))
-        T = qtn.tensor_contract(T1,T2,qtn.Tensor(data=data,inds=('i1','i2','k')))
-        T1.modify(data=T.data,inds=T.inds)
         for j in range(1,nf+1):
             T1 = tn[f'{tag}{j}'].reindex_({f'{tag}{j}':'a'})
             T2 = tni[f'{tag}{j}'].reindex({f'{tag}{j}':'b',
@@ -147,7 +123,7 @@ def compress_pol_from_top(tni,tag,coeff,tr,iprint=0,**compress_opts):
             T1.modify(data=T.data,inds=T.inds)
         tn.fuse_multibonds_()
         try:
-            tn = compress1D(tn,tag,final='right',iprint=iprint,**compress_opts)
+            tn = compress1D(tn,tag,shift=1,iprint=iprint,**compress_opts)
         except ValueError:
             tn = tn
         tn = scale(tn)
@@ -155,9 +131,9 @@ def compress_pol_from_top(tni,tag,coeff,tr,iprint=0,**compress_opts):
             print(f'exponent={tn.exponent}')
             print(tn)
     return tn
-def compress_pol_from_bottom(tni,tag,coeff,tr,iprint=0,**compress_opts):
-    nf = tni.num_tensors-1
-    n = len(coeff)
+def compress_pol_from_bottom(tni,n,tag,tr,iprint=0,**compress_opts):
+    nf = tni.num_tensors
+    stop = n // 2
     ng = tni[f'{tag}1'].shape[tni[f'{tag}1'].inds.index(f'{tag}1')]
     if iprint>0:
         print(f'{n} bottom rows')
@@ -167,28 +143,15 @@ def compress_pol_from_bottom(tni,tag,coeff,tr,iprint=0,**compress_opts):
         CP[i,i,i] = 1.
 
     tn = tni.copy()
-    T1 = tn[f'{tag}0'].reindex_({'k':'_'})
-    data = np.einsum('j,k,ijk,ilm->lm',np.array([1.,coeff[0]]),np.array([0.,1.]),ADD,CP2)
-    T = qtn.tensor_contract(T1,qtn.Tensor(data=data,inds=('_','k')))
-    T1.modify(data=T.data,inds=T.inds)
-
     for j in range(1,nf+1):
         T1 = tn[f'{tag}{j}'].reindex_({f'{tag}{j}':'a'})
         T = qtn.tensor_contract(T1,qtn.Tensor(data=CP,inds=('a','b',f'{tag}{j}')),
                                    qtn.Tensor(data=tr[j],inds=('b',)))
         T1.modify(data=T.data,inds=T.inds)
 
-    for i in range(1,n):
+    for i in range(2,stop+1):
         if iprint>0:
             print(f'compressing row {i-1},{i}...')
-        T1 = tn[f'{tag}0'].reindex_({'k':'_'})
-        data = np.einsum('ijk,j->ik',ADD,np.array([1.,coeff[i]]))
-        T = qtn.tensor_contract(T1,qtn.Tensor(data=data,inds=('i1','_')))
-        T1.modify(data=T.data,inds=T.inds)
-
-        T2 = tni[f'{tag}0'].reindex({'k':'i2',f'{tag}0,1':f'{tag}0,1_'})
-        T = qtn.tensor_contract(T1,T2,qtn.Tensor(data=CP2,inds=('i1','i2','k')))
-        T1.modify(data=T.data,inds=T.inds)
         for j in range(1,nf+1):
             T1 = tn[f'{tag}{j}'].reindex_({f'{tag}{j}':'a'})
             T2 = tni[f'{tag}{j}'].reindex({f'{tag}{j}':'b',
@@ -198,7 +161,7 @@ def compress_pol_from_bottom(tni,tag,coeff,tr,iprint=0,**compress_opts):
             T1.modify(data=T.data,inds=T.inds)
         tn.fuse_multibonds_()
         try:
-            tn = compress1D(tn,tag,final='right',iprint=iprint,**compress_opts)
+            tn = compress1D(tn,tag,shift=1,iprint=iprint,**compress_opts)
         except ValueError:
             tn = tn
         tn = scale(tn)
@@ -206,20 +169,19 @@ def compress_pol_from_bottom(tni,tag,coeff,tr,iprint=0,**compress_opts):
             print(f'exponent={tn.exponent}')
             print(tn)
     return tn
-def trace_pol_compress_col(tni,tag,new_tag,tr,coeff,iprint=0,**compress_opts):
-    tn1 = compress_pol_from_right(tni,tag,new_tag,tr,coeff,iprint=iprint,**compress_opts)
-    tn2 = compress_pol_from_left(tni,tag,new_tag,tr,coeff,iprint=iprint,**compress_opts)
-    n = len(coeff)-1
-    for i in range(n):
-        tn2[f'{new_tag}{i}'].reindex_({f'{new_tag}{i-1},{i}':f'{new_tag}{i-1},{i}_',
-                                       f'{new_tag}{i},{i+1}':f'{new_tag}{i},{i+1}_'})
+def compress_row(tni,n,tag,tr,iprint=0,**compress_opts):
+    nf = tni.num_tensors
+    tn1 = compress_pol_from_top(tni,n,tag,tr,iprint=iprint,**compress_opts)
+    tn2 = compress_pol_from_bottom(tni,n,tag,tr,iprint=iprint,**compress_opts)
+    for j in range(1,nf+1):
+        tn2[f'{tag}{j}'].reindex_({f'{tag}{j-1},{j}':f'{tag}{j-1},{j}_',
+                                  f'{tag}{j},{j+1}':f'{tag}{j},{j+1}_'})
     tn1.add_tensor_network(tn2,check_collisions=False)
-    for i in range(1,n):
-        out = tn1.contract_tags((f'{new_tag}{i-1}',f'{new_tag}{i}'),which='any',inplace=True)
+    for j in range(2,nf+1):
+        out = tn1.contract_tags((f'{tag}{j-1}',f'{tag}{j}'),which='any',inplace=True)
     return out*10.**tn1.exponent
-def compress_pol_from_right(tni,tag,new_tag,tr,coeff,iprint=0,**compress_opts):
-    nf = tni.num_tensors-1
-    n = len(coeff)-1
+def compress_pol_from_right(tni,n,tag,new_tag,tr,iprint=0,**compress_opts):
+    nf = tni.num_tensors
     stop = nf // 2
     ng = tni[f'{tag}1'].shape[tni[f'{tag}1'].inds.index(f'{tag}1')]
     if iprint>0:
@@ -264,9 +226,8 @@ def compress_pol_from_right(tni,tag,new_tag,tr,coeff,iprint=0,**compress_opts):
             print(f'exponent={tn.exponent}')
             print(tn)
     return tn
-def compress_pol_from_left(tni,tag,new_tag,tr,coeff,iprint=0,**compress_opts):
+def compress_pol_from_left(tni,n,tag,new_tag,tr,iprint=0,**compress_opts):
     nf = tni.num_tensors-1
-    n = len(coeff)-1
     stop = nf // 2
     ng = tni[f'{tag}1'].shape[tni[f'{tag}1'].inds.index(f'{tag}1')]
     if iprint>0:
@@ -289,18 +250,8 @@ def compress_pol_from_left(tni,tag,new_tag,tr,coeff,iprint=0,**compress_opts):
             T.modify(tags=f'{new_tag}{i}')
             col.add_tensor(T)
         return col
-    tn = qtn.TensorNetwork([])
-    for i in range(n):
-        T = tni[f'{tag}0'].reindex({f'{tag}0,1':f'{new_tag}{i}'})
-        data = np.einsum('ijk,j,ilm->klm',ADD,np.array([1.,coeff[i]]),CP2)
-        T = qtn.tensor_contract(T,qtn.Tensor(data=data,inds=(f'{new_tag}{i-1},{i}','k',f'{new_tag}{i},{i+1}')))
-        if i==0:
-            T = qtn.tensor_contract(T,qtn.Tensor(data=np.array([0.,1.]),inds=(f'{new_tag}{i-1},{i}',))) 
-        if i==n-1:
-            T = qtn.tensor_contract(T,qtn.Tensor(data=np.array([1.,coeff[n]]),inds=(f'{new_tag}{i},{i+1}',)))
-        T.modify(tags=f'{new_tag}{i}')
-        tn.add_tensor(T)
-    for j in range(1,stop+1):
+    tn = get_col(1) 
+    for j in range(2,stop+1):
         if iprint>0:
             print(f'compressing col {j-1},{j}...')
         col = get_col(j)
@@ -320,4 +271,50 @@ def compress_pol_from_left(tni,tag,new_tag,tr,coeff,iprint=0,**compress_opts):
             print(f'exponent={tn.exponent}')
             print(tn)
     return tn
-       
+def compress_col(tni,n,tag,new_tag,tr,iprint=0,**compress_opts):
+    tn1 = compress_pol_from_right(tni,n,tag,new_tag,tr,iprint=iprint,**compress_opts)
+    tn2 = compress_pol_from_left(tni,n,tag,new_tag,tr,iprint=iprint,**compress_opts)
+    for i in range(n):
+        tn2[f'{new_tag}{i}'].reindex_({f'{new_tag}{i-1},{i}':f'{new_tag}{i-1},{i}_',f'{new_tag}{i},{i+1}':f'{new_tag}{i},{i+1}_'})
+    tn1.add_tensor_network(tn2,check_collisions=False)
+    for i in range(1,n):
+        out = tn1.contract_tags((f'{new_tag}{i-1}',f'{new_tag}{i}'),which='any',inplace=True)
+    return out*10.**tn1.exponent
+def trace_pol(tnx,tag,tr,coeff,new_tag=None,iprint=0,**compress_opts):
+    n = len(coeff)-1
+    tnx = tnx.copy()
+    tnx.add_tensor(qtn.Tensor(data=np.array([0.,1.]),inds=('k',),tags=f'{tag}0'))
+    tnx.contract_tags((f'{tag}0',f'{tag}1'),which='any',inplace=True)
+    tnx[f'{tag}1'].modify(tags=f'{tag}1')
+    nf = tnx.num_tensors
+
+    out = 0.
+    for (i,ai) in coeff.items():
+        if i==0:
+            outi = ai if isinstance(ai,float) else ai[0]*10.**ai[1]
+            sign = 1.
+        else:
+            tni = tnx.copy()
+            if isinstance(ai,float):
+                ai_abs = abs(ai)
+                sign = ai/ai_abs
+                exp = np.log10(ai_abs)
+            else:
+                sign,exp = ai 
+            fac = 10.**(exp/(i*nf))
+            for j in range(1,nf+1):
+                tni[f'{tag}{j}'].modify(data=tni[f'{tag}{j}'].data*fac)
+            if i==1:
+                for j in range(1,nf+1):
+                    tni.add_tensor(qtn.Tensor(data=tr[j],inds=(f'{tag}{j}',),tags=f'{tag}{j}'))
+                for j in range(2,nf+1):
+                    outi = tni.contract_tags((f'{tag}{j-1}',f'{tag}{j}'),which='any',inplace=True)
+            else: 
+                if new_tag is None:
+                    outi = compress_row(tni,i,tag,tr,iprint=iprint,**compress_opts)
+                else:
+                    outi = compress_col(tni,i,tag,new_tag,tr,iprint=iprint,**compress_opts)
+        out += sign*outi
+        if iprint>0:
+            print(f'order={i},outi={outi},out={out}')
+    return out
