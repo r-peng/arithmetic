@@ -33,13 +33,12 @@ if RANK==0:
     n = 20
     cutoff = 1e-10
     max_bond = 500 
-    exp_cut = np.log10(cutoff)
     tny = get_field(xs,tag,N,iprint=2,cutoff=cutoff)
     tnA = get_quadratic(tny,A,tag,iprint=2,cutoff=cutoff)
     if SIZE==1:
         print('check row...')
-        data,_ = trace_pol_compress_row(tnA,tag,tr,n,iprint=2,
-                                      exp_cut=exp_cut,cutoff=cutoff,max_bond=max_bond)
+        data,_ = trace_pol_compress_row(tnA,tag,tr,n,'./tmpdir/',iprint=2,
+                                        cutoff=cutoff,max_bond=max_bond)
     else:
         print('check col...')
         data = trace_pol_compress_col(tnA,tag,new_tag,tr,n,iprint=1,

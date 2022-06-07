@@ -225,8 +225,8 @@ def trace_field(tn,tag,nf):
     if out<0.:
         print(f'contract={out},exponent={tn.exponent}')
     return exp
-def trace_pol_compress_row(tnx,tag,tr,n,trace_first=True,iprint=0,tmpdir=None,
-                           exp_cut=-6.,cutoff=1e-10,max_bond=None):
+def trace_pol_compress_row(tnx,tag,tr,n,tmpdir,iprint=0,
+                           cutoff=1e-10,max_bond=None,full_bond=False):
     # taylor series of exponential
     tnx = tnx.copy()
     tnx.add_tensor(qtn.Tensor(data=np.array([0.,1.]),inds=('k',),tags=f'{tag}0'))
@@ -237,10 +237,9 @@ def trace_pol_compress_row(tnx,tag,tr,n,trace_first=True,iprint=0,tmpdir=None,
         tnx.compress_between(f'{tag}{j}',f'{tag}{j+1}',absorb='right',cutoff=cutoff)
     for j in range(nf-1,0,-1):
         tnx.compress_between(f'{tag}{j}',f'{tag}{j+1}',absorb='left',cutoff=cutoff)
+    write_tn_to_disc(tnx,tmpdir+'tnx')
     if iprint>1:
         print(tnx)
-    if tmpdir is not None:
-        write_tn_to_disc(tnx,tmpdir+f'nf{nf}_tnx')
  
     ng = tnx[f'{tag}1'].shape[tnx[f'{tag}1'].inds.index(f'{tag}1')]
     CP = np.zeros((ng,)*3)
@@ -248,54 +247,51 @@ def trace_pol_compress_row(tnx,tag,tr,n,trace_first=True,iprint=0,tmpdir=None,
         CP[i,i,i] = 1.
 
     tn = tnx.copy()
-    cap = tnx.copy()
     start_time = time.time()
+    for j in range(1,nf+1):
+        tn[f'{tag}{j}'].reindex_({f'{tag}{j}':'a'})
+        T = qtn.tensor_contract(tn[f'{tag}{j}'],
+                                qtn.Tensor(data=CP,inds=('a','b',f'{tag}{j}')),
+                                qtn.Tensor(data=np.sqrt(tr[j]),inds=('b',)))
+        tn[f'{tag}{j}'].modify(data=T.data,inds=T.inds)
+    try:
+        for j in range(1,nf):
+            tn.compress_between(f'{tag}{j}',f'{tag}{j+1}',absorb='right',
+                                 cutoff=cutoff)
+        for j in range(nf-1,0,-1):
+            tn.compress_between(f'{tag}{j}',f'{tag}{j+1}',absorb='left',
+                                 cutoff=cutoff)
+    except ValueError:
+        tn = tn
+    tn = scale(tn)
+    write_tn_to_disc(tn,tmpdir+'tn1')
+    if iprint>1:
+        print(f'i=1,time={time.time()-start_time}')
+        print(tn)
 
-    tni = tn.copy()
+    for i in range(2,n//2+1): 
+        tn = compress_row_1step(tn,tnx,tag,cutoff=cutoff,max_bond=max_bond,full_bond=full_bond)
+        write_tn_to_disc(tn,tmpdir+f'tn{i}')
+        if iprint>1:
+            print(f'i={i},time={time.time()-start_time}')
+            print(tn)
+
+    tni = tnx.copy()
     for j in range(1,nf+1):
         tni.add_tensor(qtn.Tensor(data=tr[j],inds=(f'{tag}{j}',),tags=f'{tag}{j}'))
     data = [trace_field(tni,tag,nf)]
     if iprint>0:
-        print(f'i=1,data={data[-1]},time={time.time()-start_time}')
-
-    tn_ = tn if trace_first else cap
-    for j in range(1,nf+1):
-        tn_[f'{tag}{j}'].reindex_({f'{tag}{j}':'a'})
-        T = qtn.tensor_contract(tn_[f'{tag}{j}'],
-                                qtn.Tensor(data=CP,inds=('a','b',f'{tag}{j}')),
-                                qtn.Tensor(data=tr[j],inds=('b',)))
-        tn_[f'{tag}{j}'].modify(data=T.data,inds=T.inds)
-    try:
-        for j in range(1,nf):
-            tn_.compress_between(f'{tag}{j}',f'{tag}{j+1}',absorb='right',
-                                 cutoff=cutoff)
-        for j in range(nf-1,0,-1):
-            tn_.compress_between(f'{tag}{j}',f'{tag}{j+1}',absorb='left',
-                                 cutoff=cutoff)
-    except ValueError:
-        tn_ = tn_
-    if iprint>1:
-        print(tn_)
-    if tmpdir is not None:
-        write_tn_to_disc(cap,tmpdir+f'nf{nf}_cap')
-
-    for i in range(2,n+1): 
-        tn.exponent -= np.log10(i)
-        if iprint>1:
-            print(tn)
-        if tmpdir is not None:
-            write_tn_to_disc(tn,tmpdir+f'nf{nf}_tn{i}')
-        tni = tn.copy()
-        tni.add_tensor_network(cap,check_collisions=True)
-        data.append(trace_field(tni,tag,nf))
+        print(f'i=1,data={data[-1]}')
+    for i in range(2,n+1):
+        tn1 = load_tn_from_disc(tmpdir+f'tn{i//2}') 
+        tn2 = load_tn_from_disc(tmpdir+f'tn{i-i//2}') 
+        tn1.add_tensor_network(tn2,check_collisions=True)
+        tn1.exponent -= sum([np.log10(k) for k in range(2,i+1)])
+        data.append(trace_field(tn1,tag,nf))
         if iprint>0:
-            print(f'i={i},data={data[-1]},time={time.time()-start_time}')
-        if data[-1]<exp_cut:
-            break
-        if i<n: 
-            tn = compress_row_1step(tn,tnx,tag,cutoff=cutoff,max_bond=max_bond)
+            print(f'i={i},data={data[-1]}')
     return data,tnx
-def compress_row_1step(tn,tnx,tag,cutoff=1e-10,max_bond=None):
+def compress_row_1step(tn,tnx,tag,cutoff=1e-10,max_bond=None,full_bond=False):
     nf = tnx.num_tensors
     ng = tnx[f'{tag}1'].shape[tnx[f'{tag}1'].inds.index(f'{tag}1')]
 
