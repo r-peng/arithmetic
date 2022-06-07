@@ -1,7 +1,11 @@
 import numpy as np
 import quimb.tensor as qtn
-from .utils import ADD,CP2,scale,parallelized_looped_function
+from .utils import ADD,CP2,scale,write_tn_to_disc,load_tn_from_disc
 import time
+from mpi4py import MPI
+COMM = MPI.COMM_WORLD
+SIZE = COMM.Get_size()
+RANK = COMM.Get_rank()
 def get_field(ys,tag,nf,iprint=0,cutoff=1e-10):
     if iprint>0:
         print('getting field...')
@@ -221,7 +225,7 @@ def trace_field(tn,tag,nf):
     if out<0.:
         print(f'contract={out},exponent={tn.exponent}')
     return exp
-def trace_pol_compress_row(tnx,tag,tr,n,trace_first=True,iprint=0,
+def trace_pol_compress_row(tnx,tag,tr,n,trace_first=True,iprint=0,tmpdir=None,
                            exp_cut=-6.,cutoff=1e-10,max_bond=None):
     # taylor series of exponential
     tnx = tnx.copy()
@@ -235,6 +239,8 @@ def trace_pol_compress_row(tnx,tag,tr,n,trace_first=True,iprint=0,
         tnx.compress_between(f'{tag}{j}',f'{tag}{j+1}',absorb='left',cutoff=cutoff)
     if iprint>1:
         print(tnx)
+    if tmpdir is not None:
+        write_tn_to_disc(tnx,tmpdir+f'nf{nf}_tnx')
  
     ng = tnx[f'{tag}1'].shape[tnx[f'{tag}1'].inds.index(f'{tag}1')]
     CP = np.zeros((ng,)*3)
@@ -270,11 +276,15 @@ def trace_pol_compress_row(tnx,tag,tr,n,trace_first=True,iprint=0,
         tn_ = tn_
     if iprint>1:
         print(tn_)
+    if tmpdir is not None:
+        write_tn_to_disc(cap,tmpdir+f'nf{nf}_cap')
 
     for i in range(2,n+1): 
         tn.exponent -= np.log10(i)
         if iprint>1:
             print(tn)
+        if tmpdir is not None:
+            write_tn_to_disc(tn,tmpdir+f'nf{nf}_tn{i}')
         tni = tn.copy()
         tni.add_tensor_network(cap,check_collisions=True)
         data.append(trace_field(tni,tag,nf))
@@ -284,7 +294,7 @@ def trace_pol_compress_row(tnx,tag,tr,n,trace_first=True,iprint=0,
             break
         if i<n: 
             tn = compress_row_1step(tn,tnx,tag,cutoff=cutoff,max_bond=max_bond)
-    return data
+    return data,tnx
 def compress_row_1step(tn,tnx,tag,cutoff=1e-10,max_bond=None):
     nf = tnx.num_tensors
     ng = tnx[f'{tag}1'].shape[tnx[f'{tag}1'].inds.index(f'{tag}1')]
@@ -320,42 +330,55 @@ def compress_row_1step(tn,tnx,tag,cutoff=1e-10,max_bond=None):
 
 def trace_pol_compress_col(tnx,tag,new_tag,tr,n,iprint=0,cutoff=1e-10,max_bond=None):
     # taylor series of exponential
-    tnx = tnx.copy()
-    tnx.add_tensor(qtn.Tensor(data=np.array([0.,1.]),inds=('k',),tags=f'{tag}0'))
-    tnx.contract_tags((f'{tag}0',f'{tag}1'),which='any',inplace=True)
-    tnx[f'{tag}1'].modify(tags=f'{tag}1')
-    nf = tnx.num_tensors
-    for j in range(1,nf):
-        tnx.compress_between(f'{tag}{j}',f'{tag}{j+1}',absorb='right',cutoff=cutoff)
-    for j in range(nf-1,0,-1):
-        tnx.compress_between(f'{tag}{j}',f'{tag}{j+1}',absorb='left',cutoff=cutoff)
-    if iprint>1:
-        print(tnx)
+    start = 3 if n%2==0 else 4
+    assert (n-start+1)%2 == 0
+    data,tnx = trace_pol_compress_row(tnx,tag,tr,start-1,iprint=iprint,
+                                      cutoff=cutoff,max_bond=max_bond)
+    tmp = list(range(start,n+1))
+    gps = []
+    while len(tmp)>0:
+        i = tmp.pop(0)
+        j = tmp.pop()
+        gps += [('left',i,j),('right',i,j)]
+    assert len(tmp)==0
 
-    ng = tnx[f'{tag}1'].shape[tnx[f'{tag}1'].inds.index(f'{tag}1')]
-    CP = np.zeros((ng,)*3)
-    for i in range(ng):
-        CP[i,i,i] = 1.
+    min_per_worker = len(gps) // SIZE
+    per_worker = [min_per_worker for _ in range(SIZE)]
+    for i in range(len(gps) - min_per_worker * SIZE):
+        per_worker[SIZE-1-i] += 1
 
-    tni = tnx.copy()
-    for j in range(1,nf+1):
-        tni.add_tensor(qtn.Tensor(data=tr[j],inds=(f'{tag}{j}',),tags=f'{tag}{j}'))
-    data = [trace_field(tni,tag,nf)]
-    if iprint>0:
-        print(f'i=1,data={data[-1]}')
+    randomly_permuted_tasks = np.random.permutation(len(gps))
+    worker_ranges = []
+    for worker in range(SIZE):
+        start_ = sum(per_worker[:worker])
+        end_ = sum(per_worker[:worker+1])
+        tasks = [randomly_permuted_tasks[ind] for ind in range(start_, end_)]
+        worker_ranges.append(tasks)
 
-    iterate_over = []
-    for i in range(2,n+1):
-        iprint_ = iprint if i==n else 0
-        iterate_over += [('left',i,0),('right',i,iprint_)]
-    fxn = compress_col_wrapper
+    func = compress_col_wrapper
     args = [tnx,tag,new_tag,tr]
     kwargs = {'cutoff':cutoff,'max_bond':max_bond}
-    ls = parallelized_looped_function(fxn,iterate_over,args,kwargs)
-    tn_map = dict()
-    for side,i,tn in ls:
-        tn_map[side,i] = tn
-    for i in range(2,n+1):
+    tn_map = dict() 
+    for worker in reversed(range(SIZE)):
+        worker_iterate_over = []
+        for i in worker_ranges[worker]:
+            side,n1,n2 = gps[i]
+            iprint1 = iprint if worker==0 else 0
+            iprint2 = iprint if worker==0 else 0
+            worker_iterate_over += [(side,n1,iprint1),(side,n2,iprint2)]
+        worker_info = [func, worker_iterate_over, args, kwargs]
+        if worker != 0:
+            COMM.send(worker_info, dest=worker)
+        else:
+            for info in worker_iterate_over:
+                side,i,tn = func(info,*args,**kwargs)
+                tn_map[side,i] = tn
+    for worker in range(1, SIZE):
+        ls = COMM.recv(source=worker)
+        for (side,i,tn) in ls:
+            tn_map[side,i] = tn
+
+    for i in range(start,n+1):
         tn1,tn2 = tn_map['left',i],tn_map['right',i]
         tn1.add_tensor_network(tn2,check_collisions=True)
         tn1.exponent -= sum([np.log10(k) for k in range(2,i+1)])

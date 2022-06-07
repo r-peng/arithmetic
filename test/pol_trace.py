@@ -6,6 +6,7 @@ from arithmetic.pol import (
     trace_pol_compress_row,
     trace_pol_compress_col,
 )
+import itertools
 from arithmetic.utils import worker_execution
 np.set_printoptions(precision=8,suppress=True)
 from mpi4py import MPI
@@ -14,29 +15,20 @@ SIZE = COMM.Get_size()
 RANK = COMM.Get_rank()
 print(f'RANK={RANK},SIZE={SIZE}')
 if RANK==0:
-    N = 10
+    N = 6
     tag,new_tag = 'x','a'
     ng = 4
-    n = 4
+    n = 10
     cutoff = 1e-15
     max_bond = 500 
-    tnx = dict()
-    sum_ = dict()
-    idxs = [np.random.randint(low=0,high=ng) for i in range(N)]
+    xs = dict()
     for k in range(1,n+1):
-        xs = {i:np.random.rand(ng) for i in range(1,N+1)}
-        
-        sum_[k] = sum(np.array([xs[i][idxs[i-1]] for i in range(1,N+1)]))
-        tr = {i:np.zeros(ng) for i in range(1,N+1)}
-        for i in range(1,N+1):
-            tr[i][idxs[i-1]] = 1. 
-        
-        tnx[k] = get_sum(xs,tag,iprint=1,cutoff=cutoff)
-        tny = tnx[k].copy()
-        for i in range(1,N+1):
-            tny.add_tensor(qtn.Tensor(data=tr[i],inds=(f'{tag}{i}',)))
-        data = tny.contract()
-        print(f'k={k},check get_field={abs(sum_[k]-data)/sum_[k]}')
+        xs[k] = {i:np.random.rand(ng) for i in range(1,N+1)}
+    xs = {k:xs[1] for k in range(1,N+1)}
+    tnx = dict()
+    tr = {i:np.ones(ng)/ng for i in range(1,N+1)}
+    for k in range(1,n+1):
+        tnx[k] = get_sum(xs[k],tag,iprint=1,cutoff=cutoff)
     if SIZE==1:
         print('check row...')
         sign,data = trace_pol_compress_row(tnx,tag,tr,iprint=1,
@@ -45,8 +37,20 @@ if RANK==0:
         print('check col...')
         sign,data = trace_pol_compress_col(tnx,tag,new_tag,tr,iprint=1,
                                       cutoff=cutoff,max_bond=max_bond)
-    prod = sum([np.log10(sum_[k]) for k in range(1,n+1)])
-    print('check trace prod=',abs(prod-data)/abs(prod))
+    print(f'numerical integration...')
+    ls = list(itertools.product(range(ng),repeat=N))
+    idxs = ls[0]
+    prod = 0.
+    for k in range(1,n+1):
+        prod += np.log10(sum([xs[k][i][idxs[i-1]] for i in range(1,N+1)]))
+    out = prod
+    for idxs in ls[1:]:
+        prod = 0.
+        for k in range(1,n+1):
+            prod += np.log10(sum([xs[k][i][idxs[i-1]] for i in range(1,N+1)]))
+        out += np.log10(1.+10.**(prod-out))
+    out -= N*np.log10(ng)
+    print('check trace prod=',abs(out-data)/abs(out))
     for complete_rank in range(1,SIZE):
         COMM.send('finished',dest=complete_rank)
 else:

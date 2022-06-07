@@ -38,7 +38,7 @@ if RANK==0:
     tnA = get_quadratic(tny,A,tag,iprint=2,cutoff=cutoff)
     if SIZE==1:
         print('check row...')
-        data = trace_pol_compress_row(tnA,tag,tr,n,iprint=2,
+        data,_ = trace_pol_compress_row(tnA,tag,tr,n,iprint=2,
                                       exp_cut=exp_cut,cutoff=cutoff,max_bond=max_bond)
     else:
         print('check col...')
