@@ -4,9 +4,7 @@ from arithmetic.gaussian import (
     get_A,
     get_hypergraph,
     resolve,
-    contract_scheme1,
-    contract_scheme2,
-    contract_scheme3,
+    contract,
 )
 import itertools,h5py
 from arithmetic.utils import parallelized_looped_function,worker_execution
@@ -22,7 +20,7 @@ def fxn(idxs,A,xs,ws):
     wts = np.array([ws[idxs[i]] for i in range(N)])
     return - np.einsum('ij,i,j->',A,vec,vec) + sum([np.log(w) for w in wts])
 if RANK==0:
-    N = 5
+    N = 16
     hw = N
     cutoff = 1e-5
     ng = 4
@@ -30,17 +28,17 @@ if RANK==0:
     
     #A,D = get_A(N,hw)
     #print(A)
-    #A = np.random.rand(N,N)
-    #A += A.T
-    #A -= 1.
+    A = np.random.rand(N,N)
+    A += A.T
+    A -= 1.
     #f = h5py.File('A.hdf5','w')
     #f.create_dataset('A',data=A)
     #f.close()
     #exit()
 
-    f = h5py.File('A.hdf5','r')
-    A = f['A'][:]
-    f.close()
+    #f = h5py.File('A.hdf5','r')
+    #A = f['A'][:]
+    #f.close()
 
     tn1 = get_hypergraph(A,xs,ws,simplify=True,cutoff=cutoff)
     tn2 = resolve(tn1.copy(),N,remove_lower=True)
@@ -60,9 +58,10 @@ if RANK==0:
     exp1 += tn1.exponent + np.log10(out)
     exp1 *= np.log(10.)
     print(f'ng={ng},exp1={exp1}')
-    exit()
+    #exit()
 
-    exp2 = contract_scheme3(tn2,progbar=True) 
+    print('num_tensors=',tn2.num_tensors)
+    exp2 = contract(tn2,final=3,total=tn2.num_tensors*2,max_bond=128) 
     exp2 *= np.log(10.)
     print('exp1=',exp1)
     print('exp2=',exp2)

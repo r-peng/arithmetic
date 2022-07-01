@@ -114,156 +114,236 @@ def resolve(tn,N,remove_lower=True):
                     tid = list(peps._get_tids_from_tags(peps.site_tag(i,j)))[0]
                     peps._pop_tensor(tid)
     return peps
-def contract_scheme1(peps,max_bond=None,cutoff=1e-10,min_size=3,progbar=False):
+def contract(peps,final=3,total=None,**compress_opts):
     for i in range(peps.Lx-1):
         peps.contract_between(peps.site_tag(i,i),peps.site_tag(i+1,i))
-    imin,imax = 0,peps.Lx-1
-    jmin,jmax = 0,peps.Ly-1
-    step_range = range(peps.Lx,min_size,-3) 
-    if progbar:
-        step_range = tqdm(step_range) 
-    num_compress = 0
-    for step in step_range:
-        if jmax-jmin-1<min_size:
-            break
+    def corner(peps,imin,imax,jmin,jmax):
         peps.contract_between(peps.site_tag(imin,jmin),peps.site_tag(imin,jmin+1))
-        peps.contract_boundary_from_bottom_(
-            xrange=(imin,imin+1),yrange=(jmin+1,jmax),equalize_norms=1.,
-            compress_sweep='right',max_bond=max_bond,cutoff=cutoff)
-        num_compress += jmax-jmin-1
-        imin += 1
-        jmin += 1
-
-        if imax-1-imin<min_size:
-            break
         peps.contract_between(peps.site_tag(imax,jmax),peps.site_tag(imax-1,jmax))
-        peps.contract_boundary_from_right_(
-            xrange=(imin,imax-1),yrange=(jmax-1,jmax),equalize_norms=1.,
-            compress_sweep='up',max_bond=max_bond,cutoff=cutoff)
-        num_compress += imax-1-imin
-        imax -= 1
-        jmax -= 1
-
-        if imax-imin-1<min_size:
-            break
-        diag = list(zip(range(imin,imax+1),range(jmin,jmax+1)))
-        for (i,j) in diag[1:]:
-            peps.contract_between(peps.site_tag(i,j),peps.site_tag(i-1,j))
-        peps.contract_between(peps.site_tag(*diag[0]),peps.site_tag(*diag[1]))
-        diag.pop(0)
-        for i in range(len(diag)-1):
-            peps.canonize_between(peps.site_tag(*diag[i]),peps.site_tag(*diag[i+1]),
-                                  absorb='right',cutoff=cutoff)
-        for i in range(len(diag)-1,0,-1):
-            peps.compress_between(peps.site_tag(*diag[i-1]),peps.site_tag(*diag[i]),
-                absorb='left',max_bond=max_bond,cutoff=cutoff,equalize_norms=1.)
-            num_compress += 1
         jmin += 1
         imax -= 1
-        #print(imin,imax,jmin,jmax,peps.num_tensors)
-    print('num_tensors=',peps.num_tensors)
-    print('number of compression=',num_compress)
-    return np.log10(peps.contract())+peps.exponent
-def contract_scheme2(peps,min_size=3,progbar=False,**compress_opts):
+        peps.contract_between(peps.site_tag(imin,jmax),peps.site_tag(imin+1,jmax))
+        return peps,imin,imax,jmin,jmax
+
     imin,imax = 0,peps.Lx-1
     jmin,jmax = 0,peps.Ly-1
-    step_range = range(peps.Lx,min_size,-2) 
-    if progbar:
-        step_range = tqdm(step_range)
     num_compress = 0
-    for step in step_range:
-        # remove left corner
-        for i in [imin,imin+1]:
-            peps.contract_between(
-                peps.site_tag(i,jmin),peps.site_tag(i,jmin+1))
-        jmin += 1
-        # remove top corner
-        for j in [jmax-1,jmax]:
-            peps.contract_between(
-                peps.site_tag(imax,j),peps.site_tag(imax-1,j))
-        imax -= 1
 
-        if jmax-jmin<min_size:
-            break
-        peps.contract_boundary_from_bottom_(
-            xrange=(imin,imin+1),yrange=(jmin,jmax),equalize_norms=1.,
-            compress_sweep='right',**compress_opts)
-        num_compress += jmax-jmin
+    const = 1 if peps.Lx % 2 == 1 else 3
+    final_tn_size = (final-1)*final*2 + const*final
+
+    if total is not None:
+        progbar = tqdm(total=total*2)
+    peps,imin,imax,jmin,jmax = corner(peps,imin,imax,jmin,jmax)
+    while True:
+        for j in range(jmin,jmax-1):
+            peps.contract_between(peps.site_tag(imin,j),peps.site_tag(imin+1,j))
+        peps.contract_between(peps.site_tag(imin,jmax-1),peps.site_tag(imin+1,jmax))
+        peps.contract_between(peps.site_tag(imin+1,jmax-1),peps.site_tag(imin,jmax))
+        for i in range(imin+2,imax+1):
+            peps.contract_between(peps.site_tag(i,jmax),peps.site_tag(i,jmax-1))
         imin += 1
-
-        if imax-imin<min_size:
-            break
-        peps.contract_boundary_from_right_(
-            xrange=(imin,imax),yrange=(jmax-1,jmax),equalize_norms=1.,
-            compress_sweep='down',**compress_opts)
-        num_compress += imax-imin
         jmax -= 1
-        #print(imin,imax,jmin,jmax,peps.num_tensors)
-    print('num_tensors=',peps.num_tensors)
-    print('number of compression=',num_compress)
+
+        if peps.num_tensors <= final_tn_size:
+            break
+        peps,imin,imax,jmin,jmax = corner(peps,imin,imax,jmin,jmax)
+
+        seq  = [peps.site_tag(imin,j) for j in range(jmin,jmax)]
+        seq += [peps.site_tag(i,jmax) for i in range(imin+1,imax+1)]
+        for i in range(len(seq)-1):
+            peps.canonize_between(seq[i],seq[i+1],absorb='right',equalize_norms=1.)
+            if total is not None:
+                progbar.update()
+        for i in range(len(seq)-1,0,-1):
+            peps.compress_between(seq[i-1],seq[i],absorb='left',equalize_norms=1.,
+                                  **compress_opts)
+            if total is not None:
+                progbar.update()
+            num_compress += 1
+    if total is None:
+        return num_compress
+    progbar.close()
     opt = ctg.HyperOptimizer(minimize='combo',parallel='ray')
     tree = peps.contraction_tree(opt)
     out,exp = tree.contract(peps.arrays,strip_exponent=True)
     if out<0.:
         print('contracts to=',out)
     return np.log10(abs(out))+exp+peps.exponent
-def contract_scheme3(peps,max_bond=None,cutoff=1e-10,min_size=3,progbar=False):
-    split = (peps.Lx-1)//2
-    step_range = range(split)
-    if progbar:
-        step_range = tqdm(step_range) 
+def contractW(peps,W,total=None,**compress_opts):
+    for i in range(peps.Lx-1):
+        peps.contract_between(peps.site_tag(i,i),peps.site_tag(i+1,i))
+
+    imin,imax = 0,peps.Lx-1
+    jmin,jmax = 0,peps.Ly-1
     num_compress = 0
-    for i in step_range:
-        peps.contract_boundary_from_left_(xrange=(0,i+1),yrange=(i,i+1),
-            equalize_norms=1.,compress_sweep='down',max_bond=max_bond,cutoff=cutoff)
-        peps.contract_boundary_from_top_(xrange=(peps.Lx-1-i-1,peps.Lx-1-i),
-            yrange=(peps.Lx-1-i-1,peps.Ly-1),
-            equalize_norms=1.,compress_sweep='left',max_bond=max_bond,cutoff=cutoff)
-        num_compress += (i+1)*2
 
-    imin,imax = 0,peps.Lx-1-split
-    jmin,jmax = split,peps.Ly-1
-    step_range = range(peps.Ly-split,min_size,-2) 
-    if progbar:
-        step_range = tqdm(step_range) 
-    for step in step_range:
-        if jmax-jmin<min_size:
-            break
-        peps.contract_boundary_from_bottom_(
-            xrange=(imin,imin+1),yrange=(jmin,jmax),equalize_norms=1.,
-            compress_sweep='left',max_bond=max_bond,cutoff=cutoff)
-        num_compress += jmax-jmin
-        imin += 1
-
-        if imax-imin<min_size:
-            break
-        peps.contract_boundary_from_left_(
-            xrange=(imin,imax),yrange=(jmin,jmin+1),equalize_norms=1.,
-            compress_sweep='up',max_bond=max_bond,cutoff=cutoff)
-        num_compress += imax-imin
+    while True:
+        peps.contract_between(peps.site_tag(imin,jmin),peps.site_tag(imin,jmin+1))
         jmin += 1
+        for j in range(jmin,jmin+W):
+            peps.contract_between(peps.site_tag(imin,j),peps.site_tag(imin+1,j))
+        imin += 1
+        seq = [peps.site_tag(imin,j) for j in range(jmin,jmin+W)]
+        for i in range(len(seq)-1):
+            peps.canonize_between(seq[i],seq[i+1],absorb='right',equalize_norms=1.)
+        for i in range(len(seq)-1,0,-1):
+            peps.compress_between(seq[i-1],seq[i],absorb='left',equalize_norms=1.,
+                                  **compress_opts)
+      
 
-        if jmax-jmin<min_size:
-            break
-        peps.contract_boundary_from_top_(
-            xrange=(imax-1,imax),yrange=(jmin,jmax),equalize_norms=1.,
-            compress_sweep='right',max_bond=max_bond,cutoff=cutoff)
-        num_compress += jmax-jmin
-        imax -= 1
-        
-        if imax-imin<min_size:
-            break
-        peps.contract_boundary_from_right_(
-            xrange=(imin,imax),yrange=(jmax-1,jmax),equalize_norms=1.,
-            compress_sweep='down',max_bond=max_bond,cutoff=cutoff)
-        num_compress += imax-imin
-        jmax -= 1
-        #print(imin,imax,jmin,jmax,peps.num_tensors)
-    print('num_tensors=',peps.num_tensors)
-    print('number of compression=',num_compress)
-    opt = ctg.HyperOptimizer(minimize='combo',parallel='ray')
-    tree = peps.contraction_tree(opt)
-    out,exp = tree.contract(peps.arrays,strip_exponent=True)
-    if out<0.:
-        print('contracts to=',out)
-    return np.log10(abs(out))+exp+peps.exponent
+        break
+    return    
+#def contract_scheme1(peps,max_bond=None,cutoff=1e-10,min_size=3,progbar=False):
+#    for i in range(peps.Lx-1):
+#        peps.contract_between(peps.site_tag(i,i),peps.site_tag(i+1,i))
+#    imin,imax = 0,peps.Lx-1
+#    jmin,jmax = 0,peps.Ly-1
+#    step_range = range(peps.Lx,min_size,-3) 
+#    if progbar:
+#        step_range = tqdm(step_range) 
+#    num_compress = 0
+#    for step in step_range:
+#        if jmax-jmin-1<min_size:
+#            break
+#        peps.contract_between(peps.site_tag(imin,jmin),peps.site_tag(imin,jmin+1))
+#        peps.contract_boundary_from_bottom_(
+#            xrange=(imin,imin+1),yrange=(jmin+1,jmax),equalize_norms=1.,
+#            compress_sweep='right',max_bond=max_bond,cutoff=cutoff)
+#        num_compress += jmax-jmin-1
+#        imin += 1
+#        jmin += 1
+#
+#        if imax-1-imin<min_size:
+#            break
+#        peps.contract_between(peps.site_tag(imax,jmax),peps.site_tag(imax-1,jmax))
+#        peps.contract_boundary_from_right_(
+#            xrange=(imin,imax-1),yrange=(jmax-1,jmax),equalize_norms=1.,
+#            compress_sweep='up',max_bond=max_bond,cutoff=cutoff)
+#        num_compress += imax-1-imin
+#        imax -= 1
+#        jmax -= 1
+#
+#        if imax-imin-1<min_size:
+#            break
+#        diag = list(zip(range(imin,imax+1),range(jmin,jmax+1)))
+#        for (i,j) in diag[1:]:
+#            peps.contract_between(peps.site_tag(i,j),peps.site_tag(i-1,j))
+#        peps.contract_between(peps.site_tag(*diag[0]),peps.site_tag(*diag[1]))
+#        diag.pop(0)
+#        for i in range(len(diag)-1):
+#            peps.canonize_between(peps.site_tag(*diag[i]),peps.site_tag(*diag[i+1]),
+#                                  absorb='right',cutoff=cutoff)
+#        for i in range(len(diag)-1,0,-1):
+#            peps.compress_between(peps.site_tag(*diag[i-1]),peps.site_tag(*diag[i]),
+#                absorb='left',max_bond=max_bond,cutoff=cutoff,equalize_norms=1.)
+#            num_compress += 1
+#        jmin += 1
+#        imax -= 1
+#        #print(imin,imax,jmin,jmax,peps.num_tensors)
+#    print('num_tensors=',peps.num_tensors)
+#    print('number of compression=',num_compress)
+#    return np.log10(peps.contract())+peps.exponent
+#def contract_scheme2(peps,min_size=3,progbar=False,**compress_opts):
+#    imin,imax = 0,peps.Lx-1
+#    jmin,jmax = 0,peps.Ly-1
+#    step_range = range(peps.Lx,min_size,-2) 
+#    if progbar:
+#        step_range = tqdm(step_range)
+#    num_compress = 0
+#    for step in step_range:
+#        # remove left corner
+#        for i in [imin,imin+1]:
+#            peps.contract_between(
+#                peps.site_tag(i,jmin),peps.site_tag(i,jmin+1))
+#        jmin += 1
+#        # remove top corner
+#        for j in [jmax-1,jmax]:
+#            peps.contract_between(
+#                peps.site_tag(imax,j),peps.site_tag(imax-1,j))
+#        imax -= 1
+#
+#        if jmax-jmin<min_size:
+#            break
+#        peps.contract_boundary_from_bottom_(
+#            xrange=(imin,imin+1),yrange=(jmin,jmax),equalize_norms=1.,
+#            compress_sweep='right',**compress_opts)
+#        num_compress += jmax-jmin
+#        imin += 1
+#
+#        if imax-imin<min_size:
+#            break
+#        peps.contract_boundary_from_right_(
+#            xrange=(imin,imax),yrange=(jmax-1,jmax),equalize_norms=1.,
+#            compress_sweep='down',**compress_opts)
+#        num_compress += imax-imin
+#        jmax -= 1
+#        #print(imin,imax,jmin,jmax,peps.num_tensors)
+#    print('num_tensors=',peps.num_tensors)
+#    print('number of compression=',num_compress)
+#    opt = ctg.HyperOptimizer(minimize='combo',parallel='ray')
+#    tree = peps.contraction_tree(opt)
+#    out,exp = tree.contract(peps.arrays,strip_exponent=True)
+#    if out<0.:
+#        print('contracts to=',out)
+#    return np.log10(abs(out))+exp+peps.exponent
+#def contract_scheme3(peps,max_bond=None,cutoff=1e-10,min_size=3,progbar=False):
+#    split = (peps.Lx-1)//2
+#    step_range = range(split)
+#    if progbar:
+#        step_range = tqdm(step_range) 
+#    num_compress = 0
+#    for i in step_range:
+#        peps.contract_boundary_from_left_(xrange=(0,i+1),yrange=(i,i+1),
+#            equalize_norms=1.,compress_sweep='down',max_bond=max_bond,cutoff=cutoff)
+#        peps.contract_boundary_from_top_(xrange=(peps.Lx-1-i-1,peps.Lx-1-i),
+#            yrange=(peps.Lx-1-i-1,peps.Ly-1),
+#            equalize_norms=1.,compress_sweep='left',max_bond=max_bond,cutoff=cutoff)
+#        num_compress += (i+1)*2
+#
+#    imin,imax = 0,peps.Lx-1-split
+#    jmin,jmax = split,peps.Ly-1
+#    step_range = range(peps.Ly-split,min_size,-2) 
+#    if progbar:
+#        step_range = tqdm(step_range) 
+#    for step in step_range:
+#        if jmax-jmin<min_size:
+#            break
+#        peps.contract_boundary_from_bottom_(
+#            xrange=(imin,imin+1),yrange=(jmin,jmax),equalize_norms=1.,
+#            compress_sweep='left',max_bond=max_bond,cutoff=cutoff)
+#        num_compress += jmax-jmin
+#        imin += 1
+#
+#        if imax-imin<min_size:
+#            break
+#        peps.contract_boundary_from_left_(
+#            xrange=(imin,imax),yrange=(jmin,jmin+1),equalize_norms=1.,
+#            compress_sweep='up',max_bond=max_bond,cutoff=cutoff)
+#        num_compress += imax-imin
+#        jmin += 1
+#
+#        if jmax-jmin<min_size:
+#            break
+#        peps.contract_boundary_from_top_(
+#            xrange=(imax-1,imax),yrange=(jmin,jmax),equalize_norms=1.,
+#            compress_sweep='right',max_bond=max_bond,cutoff=cutoff)
+#        num_compress += jmax-jmin
+#        imax -= 1
+#        
+#        if imax-imin<min_size:
+#            break
+#        peps.contract_boundary_from_right_(
+#            xrange=(imin,imax),yrange=(jmax-1,jmax),equalize_norms=1.,
+#            compress_sweep='down',max_bond=max_bond,cutoff=cutoff)
+#        num_compress += imax-imin
+#        jmax -= 1
+#        #print(imin,imax,jmin,jmax,peps.num_tensors)
+#    print('num_tensors=',peps.num_tensors)
+#    print('number of compression=',num_compress)
+#    opt = ctg.HyperOptimizer(minimize='combo',parallel='ray')
+#    tree = peps.contraction_tree(opt)
+#    out,exp = tree.contract(peps.arrays,strip_exponent=True)
+#    if out<0.:
+#        print('contracts to=',out)
+#    return np.log10(abs(out))+exp+peps.exponent
