@@ -12,7 +12,6 @@ from mpi4py import MPI
 COMM = MPI.COMM_WORLD
 SIZE = COMM.Get_size()
 RANK = COMM.Get_rank()
-
 def parallelized_looped_function(func, iterate_over, args, kwargs):
     """
     When a function must be called many times for a set of parameters

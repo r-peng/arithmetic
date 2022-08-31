@@ -2,19 +2,6 @@ import numpy as np
 import quimb.tensor as qtn
 from tqdm import tqdm 
 import cotengra as ctg
-def get_A(N,hw,emax=0.9):
-    A = np.random.rand(N,N)
-    A += A.T
-    A -= 1. 
-    for i in range(N):
-        A[i,i+hw+1:] = 0.
-        A[i+hw+1:,i] = 0.
-    D,U = np.linalg.eigh(A)
-    a,b = np.floor(D[0]),np.ceil(D[-1])
-    D -= a
-    D /= (b-a)
-    A = np.linalg.multi_dot([U,np.diag(D),U.T])
-    return A,D
 def get_hypergraph(A,xs,ws,simplify=True,cutoff=1e-10):
     N = A.shape[0]
     tn = qtn.TensorNetwork([])
@@ -117,13 +104,6 @@ def resolve(tn,N,remove_lower=True):
 def contract(peps,final=3,total=None,**compress_opts):
     for i in range(peps.Lx-1):
         peps.contract_between(peps.site_tag(i,i),peps.site_tag(i+1,i))
-    def corner(peps,imin,imax,jmin,jmax):
-        peps.contract_between(peps.site_tag(imin,jmin),peps.site_tag(imin,jmin+1))
-        peps.contract_between(peps.site_tag(imax,jmax),peps.site_tag(imax-1,jmax))
-        jmin += 1
-        imax -= 1
-        peps.contract_between(peps.site_tag(imin,jmax),peps.site_tag(imin+1,jmax))
-        return peps,imin,imax,jmin,jmax
 
     imin,imax = 0,peps.Lx-1
     jmin,jmax = 0,peps.Ly-1
@@ -132,68 +112,99 @@ def contract(peps,final=3,total=None,**compress_opts):
     const = 1 if peps.Lx % 2 == 1 else 3
     final_tn_size = (final-1)*final*2 + const*final
 
+    peps.contract_between(peps.site_tag(imin,jmin),peps.site_tag(imin,jmin+1))
+    peps.contract_between(peps.site_tag(imax,jmax),peps.site_tag(imax-1,jmax))
+    jmin += 1
+    imax -= 1
+    try:
+        peps.contract_between(peps.site_tag(imin,jmax),peps.site_tag(imin+1,jmax))
+    except KeyError:
+        pass
+
     if total is not None:
         progbar = tqdm(total=total*2)
-    peps,imin,imax,jmin,jmax = corner(peps,imin,imax,jmin,jmax)
     while True:
-        for j in range(jmin,jmax-1):
-            peps.contract_between(peps.site_tag(imin,j),peps.site_tag(imin+1,j))
-        peps.contract_between(peps.site_tag(imin,jmax-1),peps.site_tag(imin+1,jmax))
-        peps.contract_between(peps.site_tag(imin+1,jmax-1),peps.site_tag(imin,jmax))
-        for i in range(imin+2,imax+1):
-            peps.contract_between(peps.site_tag(i,jmax),peps.site_tag(i,jmax-1))
+        for j in range(jmin,jmax):
+            try:
+                peps.contract_between(peps.site_tag(imin,j),peps.site_tag(imin+1,j))
+                jstop = j
+            except KeyError:
+                break
+        for i in range(imax,imin,-1):
+            try:
+                peps.contract_between(peps.site_tag(i,jmax),peps.site_tag(i,jmax-1))
+                istart = i
+            except KeyError:
+                break
         imin += 1
         jmax -= 1
-
         if peps.num_tensors <= final_tn_size:
             break
-        peps,imin,imax,jmin,jmax = corner(peps,imin,imax,jmin,jmax)
 
-        seq  = [peps.site_tag(imin,j) for j in range(jmin,jmax)]
-        seq += [peps.site_tag(i,jmax) for i in range(imin+1,imax+1)]
-        for i in range(len(seq)-1):
-            peps.canonize_between(seq[i],seq[i+1],absorb='right',equalize_norms=1.)
+        peps.contract_between(peps.site_tag(imin,jmin),peps.site_tag(imin,jmin+1))
+        peps.contract_between(peps.site_tag(imax,jmax),peps.site_tag(imax-1,jmax))
+        jmin += 1
+        imax -= 1
+        try:
+            peps.contract_between(peps.site_tag(imin,jmax),peps.site_tag(imin+1,jmax))
+            jstop = jmax - 1
+            istart = imin + 1
+        except KeyError:
+            pass
+
+        for j in range(jmin,jstop):
+            peps.canonize_between(peps.site_tag(imin,j),peps.site_tag(imin,j+1),
+                                  absorb='right',equalize_norms=1.)
             if total is not None:
                 progbar.update()
-        for i in range(len(seq)-1,0,-1):
-            peps.compress_between(seq[i-1],seq[i],absorb='left',equalize_norms=1.,
-                                  **compress_opts)
+        try:
+            peps.canonize_between(peps.site_tag(imin,jmax-1),peps.site_tag(imin+1,jmax),
+                                  absorb='right',equalize_norms=1.)
+            if total is not None:
+                progbar.update()
+        except KeyError:
+            pass
+        except ValueError:
+            pass
+        for i in range(istart,imax):
+            peps.canonize_between(peps.site_tag(i,jmax),peps.site_tag(i+1,jmax),
+                                  absorb='right',equalize_norms=1.)
+            if total is not None:
+                progbar.update()
+
+        for i in range(imax,istart,-1):
+            peps.compress_between(peps.site_tag(i,jmax),peps.site_tag(i-1,jmax),
+                                  absorb='right',equalize_norms=1.,**compress_opts)
             if total is not None:
                 progbar.update()
             num_compress += 1
+        try:
+            peps.compress_between(peps.site_tag(imin+1,jmax),peps.site_tag(imin,jmax-1),
+                                  absorb='right',equalize_norms=1.,**compress_opts)
+            if total is not None:
+                progbar.update()
+            num_compress += 1
+        except KeyError:
+            pass
+        except ValueError:
+            pass
+        for j in range(jstop,jmin,-1):
+            peps.compress_between(peps.site_tag(imin,j),peps.site_tag(imin,j-1),
+                                  absorb='right',equalize_norms=1.,**compress_opts)
+            if total is not None:
+                progbar.update()
+            num_compress += 1
+
     if total is None:
-        return num_compress
-    progbar.close()
+        print('number of compressions=',num_compress)
+    else:
+        progbar.close()
     opt = ctg.HyperOptimizer(minimize='combo',parallel='ray')
     tree = peps.contraction_tree(opt)
     out,exp = tree.contract(peps.arrays,strip_exponent=True)
     if out<0.:
         print('contracts to=',out)
     return np.log10(abs(out))+exp+peps.exponent
-def contractW(peps,W,total=None,**compress_opts):
-    for i in range(peps.Lx-1):
-        peps.contract_between(peps.site_tag(i,i),peps.site_tag(i+1,i))
-
-    imin,imax = 0,peps.Lx-1
-    jmin,jmax = 0,peps.Ly-1
-    num_compress = 0
-
-    while True:
-        peps.contract_between(peps.site_tag(imin,jmin),peps.site_tag(imin,jmin+1))
-        jmin += 1
-        for j in range(jmin,jmin+W):
-            peps.contract_between(peps.site_tag(imin,j),peps.site_tag(imin+1,j))
-        imin += 1
-        seq = [peps.site_tag(imin,j) for j in range(jmin,jmin+W)]
-        for i in range(len(seq)-1):
-            peps.canonize_between(seq[i],seq[i+1],absorb='right',equalize_norms=1.)
-        for i in range(len(seq)-1,0,-1):
-            peps.compress_between(seq[i-1],seq[i],absorb='left',equalize_norms=1.,
-                                  **compress_opts)
-      
-
-        break
-    return    
 #def contract_scheme1(peps,max_bond=None,cutoff=1e-10,min_size=3,progbar=False):
 #    for i in range(peps.Lx-1):
 #        peps.contract_between(peps.site_tag(i,i),peps.site_tag(i+1,i))

@@ -20,17 +20,14 @@ def fxn(idxs,A,xs,ws):
     wts = np.array([ws[idxs[i]] for i in range(N)])
     return - np.einsum('ij,i,j->',A,vec,vec) + sum([np.log(w) for w in wts])
 if RANK==0:
-    N = 16
-    hw = N
+    N = 10
+    hw = 4
     cutoff = 1e-5
     ng = 4
     xs,ws = np.polynomial.legendre.leggauss(ng)
     
-    #A,D = get_A(N,hw)
-    #print(A)
-    A = np.random.rand(N,N)
-    A += A.T
-    A -= 1.
+    A = get_A(N,hw)
+    print(A)
     #f = h5py.File('A.hdf5','w')
     #f.create_dataset('A',data=A)
     #f.close()
@@ -44,24 +41,27 @@ if RANK==0:
     tn2 = resolve(tn1.copy(),N,remove_lower=True)
 
     tn1.full_simplify_(seq='CR')
-    opt = ctg.ReusableHyperOptimizer(
-        minimize='flops',
-        reconf_opts={},
-        slicing_reconf_opts={'target_size':2**26},
-        max_repeats=64,
-        parallel='ray',
-        progbar=True,
-        directory=f'./hyper_path/')
-    #tree = tn.contraction_tree(opt,output_inds='')
-    tree = tn1.contraction_tree(opt)
-    out,exp1 = tree.contract(tn1.arrays,progbar=True,strip_exponent=True)
+    if tn1.num_tensors>1:
+        opt = ctg.ReusableHyperOptimizer(
+            minimize='flops',
+            reconf_opts={},
+            slicing_reconf_opts={'target_size':2**26},
+            max_repeats=64,
+            parallel='ray',
+            progbar=True,
+            directory=f'./hyper_path/')
+        #tree = tn.contraction_tree(opt,output_inds='')
+        tree = tn1.contraction_tree(opt)
+        out,exp1 = tree.contract(tn1.arrays,progbar=True,strip_exponent=True)
+    else:
+        out,exp1 = tn1.contract(output_inds=()),0.
     exp1 += tn1.exponent + np.log10(out)
     exp1 *= np.log(10.)
     print(f'ng={ng},exp1={exp1}')
     #exit()
 
     print('num_tensors=',tn2.num_tensors)
-    exp2 = contract(tn2,final=3,total=tn2.num_tensors*2,max_bond=128) 
+    exp2 = contract(tn2,final=3,total=None,max_bond=128) 
     exp2 *= np.log(10.)
     print('exp1=',exp1)
     print('exp2=',exp2)

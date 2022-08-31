@@ -17,15 +17,15 @@ def get_proj_right(dim3):
     return P 
 def get_peps(xs,ws):
     # get peps for \prod_{j=1}^k(\sum_{i=1}^N q_{ik}(x_i))
-    N,k,d = xs.shape
-    CP = np.zeros((d,)*3)
-    for i in range(d):
+    N,k,g = xs.shape
+    CP = np.zeros((g,)*3)
+    for i in range(g):
         CP[i,i,i] = 1.0
     arrays = []
     for i in range(k):
         rows = []
         for j in range(N):
-            data = np.ones((2,d))
+            data = np.ones((2,g))
             data[1,:] = xs[j,i,:]
             data = np.einsum('ir,rpq->ipq',data,CP)
             if j>0:
@@ -64,40 +64,56 @@ def insert_projectors(peps):
             tr.reindex_({bix1:bix1_})
             br.reindex_({bix2:bix2_})
     return peps
-def trace_field(tn,tag,L):
+def trace_field(tn,tag,L,scale=True):
     for j in range(1,L-1):
         tn.contract_tags((tag.format(j),tag.format(j+1)),which='any',inplace=True)
-        fac = np.amax(np.absolute(tn[tag.format(j)].data))
-        tn[tag.format(j)].modify(data=tn[tag.format(j)].data/fac)
-        tn.exponent += np.log10(fac)
+        if scale:
+            fac = np.amax(np.fabs(tn[tag.format(j)].data))
+            tn[tag.format(j)].modify(data=tn[tag.format(j)].data/fac)
+            tn.exponent += np.log10(fac)
     out = tn.contract()
-    return out/abs(out), np.log10(abs(out)) + tn.exponent
+    if scale:
+        abs_out = np.fabs(out)
+        return out/abs_out, np.log10(np.fabs(out)) + tn.exponent
+    return out
 def compress_wrapper(info,**compress_opts):
     tn,from_which,xrange,yrange = info
     tn.contract_boundary_from_(xrange,yrange,from_which,**compress_opts)
     return tn
-def compress_row(tn,**compress_opts):
+def compress_row(tn,scale=True,**compress_opts):
     xrange1,xrange2 = (0,tn.Lx//2-1),(tn.Lx//2,tn.Lx-1)
     tn1 = tn.select([tn.row_tag(i) for i in range(tn.Lx//2)],which='any').copy()
     tn2 = tn.select([tn.row_tag(i) for i in range(tn.Lx//2,tn.Lx)],which='any').copy()
     info1 = tn1,'bottom',xrange1,(0,tn.Ly-1)
     info2 = tn2,'top',   xrange2,(0,tn.Ly-1)
-    compress_opts['equalize_norms'] = 1.
+    if scale:
+        compress_opts['equalize_norms'] = 1.
     tn1,tn2 = parallelized_looped_function(compress_wrapper,
                                            [info1,info2],[],compress_opts)
     tn1.add_tensor_network(tn2,check_collisions=True)
-    return trace_field(tn1,tn._col_tag_id,tn.Ly)
-def compress_col(tn,**compress_opts):
+    return trace_field(tn1,tn._col_tag_id,tn.Ly,scale=scale)
+def compress_col(tn,scale=True,**compress_opts):
     yrange1,yrange2 = (0,tn.Ly//2-1),(tn.Ly//2,tn.Ly-1)
     tn1 = tn.select([tn.col_tag(j) for j in range(tn.Ly//2)],which='any').copy()
     tn2 = tn.select([tn.col_tag(j) for j in range(tn.Ly//2,tn.Ly)],which='any').copy()
     info1 = tn1,'left', (0,tn.Lx-1),yrange1
     info2 = tn2,'right',(0,tn.Lx-1),yrange2
-    compress_opts['equalize_norms'] = 1.
+    if scale:
+        compress_opts['equalize_norms'] = 1.
     tn1,tn2 = parallelized_looped_function(compress_wrapper,
                                            [info1,info2],[],compress_opts)
     tn1.add_tensor_network(tn2,check_collisions=True)
-    return trace_field(tn1,tn._row_tag_id,tn.Lx)
+    return trace_field(tn1,tn._row_tag_id,tn.Lx,scale=scale)
+def compress(tn,scale=True,**compress_opts):
+    if scale:
+        compress_opts['equalize_norms'] = 1.
+    tn.contract_boundary_(**compress_opts)
+    out = tn.contract()
+    out = tn.contract()
+    if scale:
+        abs_out = np.fabs(out)
+        return out/abs_out, np.log10(np.fabs(out)) + tn.exponent
+    return out
 #def get_atn(xs,tr,CP_tag='CP{},{}',X_tag= 'q{},{}',A_tag='A{},{}',
 #                  M_tag='M{}',TR_tag='x{}',O_tag='$[0,1]$'):
 #    N,k,d = xs.shape
